@@ -127,7 +127,7 @@ if (-not $psql) {
         if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
             Fallo "No hay winget. Instala PostgreSQL a mano (guia 01, 3.1) y vuelve a ejecutar."
         }
-        winget install --id PostgreSQL.PostgreSQL.17 --accept-package-agreements --accept-source-agreements
+        winget install --id PostgreSQL.PostgreSQL.18 --accept-package-agreements --accept-source-agreements
         $psql = BuscarPsql
         if (-not $psql) { Fallo "La instalacion no ha dejado psql.exe donde se esperaba." }
         Aviso "winget instala con la contrasena de superusuario que pida su asistente; tenla a mano"

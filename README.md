@@ -75,7 +75,7 @@ Descarga el paquete de tu sistema desde la [**última versión**](../../releases
 > El equipo servidor necesita **los dos** paquetes si además es el que dirige la competición.
 
 Los paquetes son **autocontenidos**: no hace falta instalar .NET en ningún equipo. Sí hace falta
-PostgreSQL 14 o superior, pero sólo en el servidor.
+PostgreSQL 18, pero sólo en el servidor.
 
 **Sigue la [Guía de instalación](Documentación/01-Guía-de-Instalación.md)**, que cubre el proceso
 completo paso a paso. Los guiones de la carpeta `Empaquetado/` automatizan casi todo:

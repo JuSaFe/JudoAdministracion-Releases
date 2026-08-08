@@ -47,7 +47,7 @@ La única que **impone condiciones de uso** es QuestPDF; está detallada al fina
 | Componente | Licencia | Cómo se usa |
 |---|---|---|
 | .NET 9 / ASP.NET Core | MIT | Runtime incluido en los paquetes autocontenidos |
-| PostgreSQL 14+ | PostgreSQL License | Se instala aparte en el servidor; **no** se redistribuye |
+| PostgreSQL 18 (mínimo 13) | PostgreSQL License | Se instala aparte en el servidor; **no** se redistribuye |
 | Inno Setup 6 | Modificada de Inno Setup (permite uso comercial gratuito) | Solo genera el `.exe`; no se distribuye con la aplicación |
 | appimagetool / `hdiutil` | LGPL / Apple | Solo empaquetado |
 

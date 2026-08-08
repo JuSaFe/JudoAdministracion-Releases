@@ -218,10 +218,10 @@ paso "2/9  PostgreSQL"
 instalar_postgresql() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
         command -v brew >/dev/null || fallo "No hay Homebrew. Instala PostgreSQL a mano (guía §3.1)."
-        brew install postgresql@17
-        brew services start postgresql@17
-        aviso "añade a tu perfil: export PATH=\"\$(brew --prefix)/opt/postgresql@17/bin:\$PATH\""
-        export PATH="$(brew --prefix)/opt/postgresql@17/bin:$PATH"
+        brew install postgresql@18
+        brew services start postgresql@18
+        aviso "añade a tu perfil: export PATH=\"\$(brew --prefix)/opt/postgresql@18/bin:\$PATH\""
+        export PATH="$(brew --prefix)/opt/postgresql@18/bin:$PATH"
     elif command -v apt-get >/dev/null; then
         sudo apt-get update
         # postgresql-contrib NO es opcional: trae unaccent y pgcrypto.

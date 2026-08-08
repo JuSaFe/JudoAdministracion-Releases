@@ -50,7 +50,7 @@ funciona.
 
 | Requisito | Versión | Notas |
 |---|---|---|
-| **PostgreSQL** | 14 o superior | Desarrollado y probado sobre 14.21. El mínimo real es **13** (ver §3.3) |
+| **PostgreSQL** | 18 recomendada | Es la que instalan los guiones. Funciona desde la **13** (ver §3.3); en la 14 y anteriores la separación de roles queda coja |
 | **Módulos `contrib`** | La del servidor | Aportan `unaccent` y `pgcrypto`. En Windows y macOS vienen incluidos; en Linux es un paquete aparte |
 | **OpenSSL** | Cualquiera | Solo para generar el certificado (§3.4). Windows lo trae con Git para Windows |
 | **.NET Runtime** | — | **No hace falta** con los paquetes autocontenidos de la doc 00. Ver §2.3 |
@@ -144,19 +144,19 @@ Después, añadir `psql` al PATH para no escribir la ruta completa cada vez, en 
 administrador**:
 
 ```powershell
-$env:Path += ";C:\Program Files\PostgreSQL\17\bin"
+$env:Path += ";C:\Program Files\PostgreSQL\18\bin"
 # Permanente:
 [Environment]::SetEnvironmentVariable("Path",
-    [Environment]::GetEnvironmentVariable("Path","Machine") + ";C:\Program Files\PostgreSQL\17\bin",
+    [Environment]::GetEnvironmentVariable("Path","Machine") + ";C:\Program Files\PostgreSQL\18\bin",
     "Machine")
 ```
 
 **macOS.** Con Homebrew:
 
 ```bash
-brew install postgresql@17
-brew services start postgresql@17           # arranque automático al encender
-echo 'export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"' >> ~/.zprofile
+brew install postgresql@18
+brew services start postgresql@18           # arranque automático al encender
+echo 'export PATH="/opt/homebrew/opt/postgresql@18/bin:$PATH"' >> ~/.zprofile
 ```
 
 (Alternativa sin terminal: [Postgres.app](https://postgresapp.com/), que trae `contrib` incluido.)
@@ -182,6 +182,33 @@ Comprobación:
 ```bash
 psql -U postgres -c "SELECT version();"
 ```
+
+**Si ya había una versión anterior instalada.** Un salto de versión mayor (de la 14 a la 18, por
+ejemplo) **no** conserva los datos por sí solo: cada versión mayor tiene su propia carpeta de datos y
+la nueva arranca vacía. El camino seguro es volcar antes y restaurar después, con la versión vieja
+todavía en marcha:
+
+```bash
+# 1. Con la versión ANTIGUA arrancada
+pg_dumpall -U postgres > ~/copia-postgresql-antes-de-actualizar.sql
+
+# 2. Instalar la nueva y dejar solo la nueva escuchando en el 5432
+#    macOS:   brew services stop postgresql@14 && brew install postgresql@18 && brew services start postgresql@18
+#    Linux:   sudo apt install postgresql-18   (y pg_upgradecluster / pg_dropcluster para la vieja)
+#    Windows: instalador de EDB de la 18; el asistente NO migra, hay que restaurar el volcado
+
+# 3. Restaurar
+psql -U postgres -f ~/copia-postgresql-antes-de-actualizar.sql
+
+# 4. Comprobar antes de borrar nada de la versión vieja
+psql -U postgres -c "SELECT version();"
+psql -U postgres -d JudoAdministracion -c "SELECT count(*) FROM eventos;"
+```
+
+`pg_dumpall` se lleva también los roles (`judo_owner`, `judo_api`) con sus contraseñas, así que
+`appsettings.Local.json` del servidor sigue valiendo tal cual y no hay que volver a ejecutar
+`preparar-servidor` con `--forzar-configuracion`. **Nunca hagas esto el día de la competición**: es la
+única operación de toda esta guía que deja la base de datos inaccesible mientras dura.
 
 ### 3.2 Crear la base de datos
 
