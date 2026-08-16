@@ -95,7 +95,9 @@ sudo Empaquetado/red/configurar-red.sh          # macOS y Linux
 ```
 
 ```powershell
-.\Empaquetado\red\configurar-red.ps1            # Windows, como administrador
+# Windows, como administrador. Sin -ExecutionPolicy Bypass: «la ejecución de scripts está
+# deshabilitada en este sistema». Afecta sólo a esta ejecución, no al equipo.
+powershell -ExecutionPolicy Bypass -File .\Empaquetado\red\configurar-red.ps1
 ```
 
 Pregunta lo justo: enseña las interfaces de red del equipo para elegir cuál se configura —que no es

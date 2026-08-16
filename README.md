@@ -86,6 +86,16 @@ completo paso a paso. Los guiones de la carpeta `Empaquetado/` automatizan casi 
 | `Empaquetado/servidor/preparar-servidor.sh` (`.ps1`) | PostgreSQL, base de datos, roles, certificado y servicio | Servidor |
 | `Empaquetado/puesto/preparar-puesto.sh` (`.ps1`) | Certificado de confianza y conexión al servidor | Puestos |
 
+El del servidor **no hace falta descargarlo de aquí**: viene dentro del propio paquete del servicio,
+junto al SQL de roles que necesita. Se ejecuta en la carpeta donde se haya descomprimido.
+
+> **Windows.** PowerShell no ejecuta guiones `.ps1` con la directiva que trae de fábrica («la
+> ejecución de scripts está deshabilitada en este sistema»). En el paquete del servidor viene
+> `preparar-servidor.cmd`: botón derecho → *Ejecutar como administrador*. Los demás guiones se
+> lanzan igual desde PowerShell como administrador:
+> `powershell -ExecutionPolicy Bypass -File .\preparar-puesto.ps1`. Eso vale sólo para esa
+> ejecución; no cambia la configuración del equipo.
+
 ## Documentación
 
 | Documento | Contenido |

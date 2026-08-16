@@ -89,23 +89,34 @@ Ejemplo a lo largo de toda la sección: el servidor es el `192.168.2.3` y respon
 
 ### La vía rápida: un solo guion
 
-Todo lo que describe esta sección —de §3.1 a §3.7— está automatizado. En un servidor recién
-formateado, con el paquete del servicio ya descomprimido en su carpeta:
+Todo lo que describe esta sección —de §3.1 a §3.7— está automatizado. **El guion viene dentro del
+propio paquete del servicio**, junto al ejecutable y a la carpeta `Despliegue` con el SQL de roles
+que necesita: no hay que descargar nada más ni clonar el repositorio. En un servidor recién
+formateado, con el paquete ya descomprimido en su sitio:
 
 ```bash
 # macOS y Linux
-./Empaquetado/servidor/preparar-servidor.sh \
-    --dir /opt/judoadministracion-api \
-    --instalar-postgresql \
-    --instalar-servicio
+cd /opt/judoadministracion-api
+sudo ./preparar-servidor.sh --instalar-postgresql --instalar-servicio
 ```
 
 ```powershell
-# Windows, en PowerShell como administrador
-.\Empaquetado\servidor\preparar-servidor.ps1 `
-    -Dir "C:\Program Files\JudoAdministracionServidor" `
-    -InstalarPostgresql -InstalarTarea
+# Windows, en PowerShell abierto COMO ADMINISTRADOR
+cd "C:\Program Files\JudoAdministracionServidor"
+powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea
 ```
+
+En Windows, `-ExecutionPolicy Bypass` **no es opcional**: sin él sale *«la ejecución de scripts está
+deshabilitada en este sistema»*, porque ésa es la directiva de fábrica y además un `.ps1` recién
+descomprimido de un `.zip` descargado lleva la marca de Internet. Afecta sólo a esa ejecución, no al
+equipo. Quien prefiera no escribirlo: botón derecho sobre **`preparar-servidor.cmd`**, que está en la
+misma carpeta → *Ejecutar como administrador*; hace exactamente lo mismo y admite los mismos
+parámetros. Lo que **no** hay que hacer es `Set-ExecutionPolicy`, que cambia la directiva del equipo
+entero y luego nadie la deja como estaba.
+
+Si el paquete se ha descomprimido en otra carpeta, el guion se da cuenta: la carpeta del servicio es
+aquella en la que está él mismo. `--dir` (o `-Dir`) sólo hace falta para configurar un servicio que
+esté en otro sitio distinto del guion.
 
 En nueve pasos deja el servidor listo: instala PostgreSQL si falta, crea la base de datos con la
 codificación correcta, crea los roles con contraseñas generadas al azar, instala las extensiones,
@@ -624,9 +635,10 @@ sudo Empaquetado/puesto/preparar-puesto.sh --certificado judo-server.crt  # cert
 ```
 
 ```powershell
-# Windows, como administrador
-.\Empaquetado\red\configurar-red.ps1
-.\Empaquetado\puesto\preparar-puesto.ps1 -Certificado judo-server.crt
+# Windows, en PowerShell como administrador. -ExecutionPolicy Bypass es imprescindible: sin él,
+# «la ejecución de scripts está deshabilitada en este sistema». Vale sólo para esa ejecución.
+powershell -ExecutionPolicy Bypass -File .\Empaquetado\red\configurar-red.ps1
+powershell -ExecutionPolicy Bypass -File .\Empaquetado\puesto\preparar-puesto.ps1 -Certificado judo-server.crt
 ```
 
 `configurar-red` enseña las interfaces de red del equipo para elegir cuál se toca, propone la IP

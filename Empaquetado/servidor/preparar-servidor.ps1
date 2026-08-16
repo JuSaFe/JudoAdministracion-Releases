@@ -11,7 +11,20 @@
     en el equipo servidor, antes de instalar los puestos.
 
     Antes de ejecutarlo hay que haber descomprimido el paquete del servicio (el api-win-x64 de la
-    Documentación/00) en la carpeta que se indique con -Dir.
+    Documentación/00) en la carpeta que se indique con -Dir. Este guion y el SQL de roles vienen
+    DENTRO de ese paquete, así que lo normal es ejecutarlo desde ahí y no indicar -Dir: si al lado
+    del guion está JudoAdministracion.Api.exe, ésa es la carpeta del servicio.
+
+    Windows no ejecuta guiones .ps1 con la directiva por defecto (Restricted / RemoteSigned + marca
+    de Internet). Hay dos formas de lanzarlo, las dos válidas:
+
+        - Botón derecho sobre preparar-servidor.cmd -> "Ejecutar como administrador"
+          (el .cmd viene en el paquete y ya hace el Bypass y pasa los parámetros tal cual).
+
+        - En PowerShell abierto como administrador:
+              powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql
+
+    Bypass afecta sólo a esa invocación: no cambia la directiva del equipo.
 
     Es idempotente: se puede volver a ejecutar sobre un servidor ya preparado. Lo que ya existe se
     respeta —la configuración y el certificado no se rehacen salvo que se pida— y lo que falta se
@@ -23,10 +36,10 @@
     ejecución conviene hacerla con calma, leyendo lo que dice cada paso.
 
 .EXAMPLE
-    .\preparar-servidor.ps1 -Dir "C:\Program Files\JudoAdministracionServidor"
+    powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Dir "C:\Program Files\JudoAdministracionServidor"
 
 .EXAMPLE
-    .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea -Si
+    powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea -Si
 #>
 
 [CmdletBinding()]
@@ -75,8 +88,25 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Fallo "Abre PowerShell como administrador y vuelve a ejecutarlo."
 }
 
+# Este guion se ejecuta en dos sitios distintos y las rutas no son las mismas en uno y en otro:
+#
+#   - Desde el paquete descomprimido en el servidor, que es el caso normal. Ahí el guion, el .exe y
+#     Despliegue\01_roles.sql están todos en la misma carpeta.
+#   - Desde el repositorio, que es lo que hace quien desarrolla. Ahí el SQL está en
+#     JudoAdministracion.Api\Despliegue\ y el servicio, donde diga -Dir.
+#
+# Si no se indica -Dir y al lado del guion está el ejecutable, la carpeta del servicio es ésa: es lo
+# que pasa al descomprimir el paquete en otro sitio que no sea C:\Program Files.
+if (-not $PSBoundParameters.ContainsKey('Dir')) {
+    if (Test-Path (Join-Path $PSScriptRoot 'JudoAdministracion.Api.exe')) { $Dir = $PSScriptRoot }
+}
+
 $raiz        = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$sqlRoles    = Join-Path $raiz "JudoAdministracion.Api\Despliegue\01_roles.sql"
+$sqlRoles    = @(
+    (Join-Path $PSScriptRoot 'Despliegue\01_roles.sql'),                      # dentro del paquete
+    (Join-Path $Dir          'Despliegue\01_roles.sql'),                      # paquete, con -Dir
+    (Join-Path $raiz         'JudoAdministracion.Api\Despliegue\01_roles.sql')  # repositorio
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
 $binario     = Join-Path $Dir "JudoAdministracion.Api.exe"
 $config      = Join-Path $Dir "appsettings.Local.json"
 $pfx         = Join-Path $Dir "$Nombre.pfx"
@@ -93,8 +123,12 @@ Write-Host "   carpeta    $Dir"
 
 Paso "1/9  Comprobaciones previas"
 
-if (-not (Test-Path $sqlRoles)) { Fallo "No encuentro $sqlRoles. Ejecutalo desde el repositorio." }
-Bien "guion de roles localizado"
+if (-not $sqlRoles) {
+    Fallo ("No encuentro Despliegue\01_roles.sql.`n" +
+           "        Deberia estar junto a este guion (viene en el paquete api-win-x64) o en`n" +
+           "        JudoAdministracion.Api\Despliegue\ si lo ejecutas desde el repositorio.")
+}
+Bien "guion de roles localizado en $sqlRoles"
 
 if (-not (Test-Path $binario)) {
     Fallo "No encuentro el servicio en $Dir.`n        Descomprime ahi el paquete api-win-x64 (Documentacion/00) o indica otra carpeta con -Dir."

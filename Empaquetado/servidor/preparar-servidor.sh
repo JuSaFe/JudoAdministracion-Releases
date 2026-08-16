@@ -95,8 +95,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-RAIZ="$(cd "$(dirname "$0")/../.." && pwd)"
-SQL_ROLES="$RAIZ/JudoAdministracion.Api/Despliegue/01_roles.sql"
+AQUI="$(cd "$(dirname "$0")" && pwd)"
+RAIZ="$(cd "$AQUI/../.." && pwd)"
+
+# Este guion se ejecuta en dos sitios distintos y las rutas no son las mismas en uno y en otro:
+# desde el paquete descomprimido en el servidor —donde el guion, el binario y Despliegue/ están en
+# la misma carpeta— y desde el repositorio, donde el SQL vive en JudoAdministracion.Api/Despliegue/.
+# Si no se ha indicado --dir y al lado del guion está el binario, la carpeta del servicio es ésa.
+if [[ "$DIR_SERVICIO" == "/opt/judoadministracion-api" && -x "$AQUI/JudoAdministracion.Api" ]]; then
+    DIR_SERVICIO="$AQUI"
+fi
+
+SQL_ROLES=""
+for candidato in \
+    "$AQUI/Despliegue/01_roles.sql" \
+    "$DIR_SERVICIO/Despliegue/01_roles.sql" \
+    "$RAIZ/JudoAdministracion.Api/Despliegue/01_roles.sql"
+do
+    [[ -f "$candidato" ]] && { SQL_ROLES="$candidato"; break; }
+done
+
 BINARIO="$DIR_SERVICIO/JudoAdministracion.Api"
 CONFIG="$DIR_SERVICIO/appsettings.Local.json"
 PFX="$DIR_SERVICIO/$NOMBRE_SERVIDOR.pfx"
@@ -179,8 +197,10 @@ for herramienta in openssl curl; do
 done
 bien "openssl y curl disponibles"
 
-[[ -f "$SQL_ROLES" ]] || fallo "No encuentro $SQL_ROLES. Ejecuta el guion desde el repositorio."
-bien "guion de roles localizado"
+[[ -n "$SQL_ROLES" ]] || fallo "No encuentro Despliegue/01_roles.sql.
+     Debería estar junto a este guion (viene en el paquete api-<sistema>) o en
+     JudoAdministracion.Api/Despliegue/ si lo ejecutas desde el repositorio."
+bien "guion de roles localizado en $SQL_ROLES"
 
 if [[ ! -x "$BINARIO" ]]; then
     fallo "No encuentro el servicio en $DIR_SERVICIO.
