@@ -106,15 +106,14 @@ cd "C:\Program Files\JudoAdministracionServidor"
 powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea
 ```
 
-**La carpeta donde se descomprime el paquete no es indiferente**: `/opt/judoadministracion-api` en
+**La carpeta donde se descomprime el paquete es obligatoria**: `/opt/judoadministracion-api` en
 macOS y Linux, `C:\Program Files\JudoAdministracionServidor` en Windows. Es la ruta en la que la
 propia aplicación de escritorio busca el servicio para arrancarlo ella sola cuando el equipo que la
-ejecuta es también el servidor (doc 00, §8.1); si el `.zip` se descomprime en Descargas y se lanza
-desde ahí —fácil de que pase con un doble clic sin fijarse en el destino—, el guion prepara el
-servidor igual de bien, pero **avisa** de que la carpeta no es la esperada y de que hay que moverla
-antes de que llegue el día del campeonato y la aplicación no encuentre el servicio sola. El aviso
-sólo importa si ese mismo equipo va a ejecutar también la aplicación; si es un servidor sin
-pantalla, ignorarlo no tiene consecuencias.
+ejecuta es también el servidor (doc 00, §8.1). Si el `.zip` se descomprime en otro sitio —Descargas
+es el caso típico, de abrir el paquete a doble clic sin fijarse en el destino— el guion **para en el
+primer paso con un error** y no continúa: muévelo a la carpeta correcta y vuelve a lanzarlo. Es así
+tanto si ese equipo va a ejecutar también la aplicación de escritorio como si no, para no depender de
+acordarse de nada más adelante.
 
 En Windows, `-ExecutionPolicy Bypass` **no es opcional**: sin él sale *«la ejecución de scripts está
 deshabilitada en este sistema»*, porque ésa es la directiva de fábrica y además un `.ps1` recién

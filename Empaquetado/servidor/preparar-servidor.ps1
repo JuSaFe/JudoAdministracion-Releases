@@ -133,19 +133,15 @@ if (-not (Test-Path $binario)) {
 }
 Bien "servicio encontrado en $Dir"
 
-# La aplicacion de escritorio, si este mismo equipo tambien la ejecuta, busca el servicio en
-# Program Files por defecto para arrancarlo ella sola (Services/Servidor/ServicioApiLocal.
-# LocalizarBinario; ver doc 00, 8.1). Si el paquete se ha descomprimido en Descargas o en otro
-# sitio -que es justo lo que pasa si se abre el .zip a doble clic sin fijarse en el destino-, el
-# guion funciona igual de bien, pero conviene avisar ahora y no que se descubra el dia del
-# campeonato, cuando la aplicacion no encuentre el servicio sola.
+# La aplicacion de escritorio busca el servicio en Program Files por defecto para arrancarlo ella
+# sola (Services/Servidor/ServicioApiLocal.LocalizarBinario; ver doc 00, 8.1). Si el paquete se ha
+# descomprimido en otro sitio -Descargas es el caso tipico, de abrir el .zip a doble clic sin
+# fijarse en el destino-, mejor pararse aqui que descubrirlo el dia del campeonato, cuando la
+# aplicacion no encuentre el servicio sola.
 $rutaRecomendada = Join-Path $env:ProgramFiles 'JudoAdministracionServidor'
 if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\')) {
-    Aviso "esta carpeta es $Dir, y la ruta que espera la aplicacion de escritorio para arrancar"
-    Aviso "el servicio ella sola es $rutaRecomendada."
-    Aviso "Si este equipo es SOLO servidor (sin la app de escritorio), no pasa nada. Si tambien"
-    Aviso "va a ejecutarla, MUEVE esta carpeta a $rutaRecomendada antes de continuar, o luego"
-    Aviso "indica RutaApi en su configuracion (doc 00, 8.1)."
+    Fallo ("Esta carpeta es $Dir y deberia ser $rutaRecomendada (doc 00, 8.1).`n" +
+           "        Mueve ahi el paquete descomprimido y vuelve a ejecutar el guion.")
 }
 
 # ¿Servidor nuevo o ya configurado? Se decide antes de tocar la base de datos, porque de ello depende
@@ -453,12 +449,26 @@ else {
     if ($LASTEXITCODE -eq 0) { Bien "judo_api puede leer los datos" }
     else                     { Fallo "judo_api no puede leer. Revisa el paso 4." }
 
-    & $psql -h localhost -U judo_api -d $Bd -c "CREATE TABLE comprobacion_permisos (x int);" 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        & $psql -h localhost -U judo_api -d $Bd -c "DROP TABLE comprobacion_permisos;" 2>&1 | Out-Null
-        Aviso "judo_api PUEDE crear tablas y no deberia. Revisa los permisos del paso 4."
+    # Esta comprobacion tiene que poder FALLAR sin matar el guion: lo correcto es que psql termine
+    # con "permiso denegado" en su stderr, y con $ErrorActionPreference = Stop (arriba del todo),
+    # un 2>&1 convierte cada linea de stderr en un registro de error que se propaga como excepcion
+    # terminante en el momento en que se crea -antes incluso de llegar al Out-Null que deberia
+    # tragarsela-. Por eso se baja a Continue solo para estas dos llamadas: aqui SI queremos leer
+    # $LASTEXITCODE en vez de que una excepcion decida por nosotros.
+    $eapAnterior = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $psql -h localhost -U judo_api -d $Bd -c "CREATE TABLE comprobacion_permisos (x int);" 2>&1 | Out-Null
+        $judoApiPuedeCrear = ($LASTEXITCODE -eq 0)
+        if ($judoApiPuedeCrear) {
+            & $psql -h localhost -U judo_api -d $Bd -c "DROP TABLE comprobacion_permisos;" 2>&1 | Out-Null
+        }
     }
-    else { Bien "judo_api no puede alterar el esquema (correcto)" }
+    finally {
+        $ErrorActionPreference = $eapAnterior
+    }
+    if ($judoApiPuedeCrear) { Aviso "judo_api PUEDE crear tablas y no deberia. Revisa los permisos del paso 4." }
+    else                    { Bien "judo_api no puede alterar el esquema (correcto)" }
     $env:PGPASSWORD = $ClavePostgres
 }
 
@@ -542,10 +552,6 @@ if (-not $conservarConfig) {
     Write-Host ""
 }
 Write-Host "   Queda por hacer, segun la guia de instalacion:"
-if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\')) {
-Write-Host "     - Mover esta carpeta a $rutaRecomendada, si este equipo tambien" -ForegroundColor Yellow
-Write-Host "       va a ejecutar la app de escritorio                            -> doc 00, 8.1" -ForegroundColor Yellow
-}
 Write-Host "     - Cambiar la contrasena de admin@judo.com, que es 'admin123'   -> 3.9"
 Write-Host "     - Dar de alta los usuarios de los puestos                      -> 3.9"
 Write-Host "     - Abrir el $Puerto al 192.168.2.0/24 y cerrar el 5432          -> doc 02, 3.3"
