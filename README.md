@@ -90,11 +90,10 @@ El del servidor **no hace falta descargarlo de aquí**: viene dentro del propio 
 junto al SQL de roles que necesita. Se ejecuta en la carpeta donde se haya descomprimido.
 
 > **Windows.** PowerShell no ejecuta guiones `.ps1` con la directiva que trae de fábrica («la
-> ejecución de scripts está deshabilitada en este sistema»). En el paquete del servidor viene
-> `preparar-servidor.cmd`: botón derecho → *Ejecutar como administrador*. Los demás guiones se
-> lanzan igual desde PowerShell como administrador:
-> `powershell -ExecutionPolicy Bypass -File .\preparar-puesto.ps1`. Eso vale sólo para esa
-> ejecución; no cambia la configuración del equipo.
+> ejecución de scripts está deshabilitada en este sistema»). Los tres se lanzan igual, desde
+> PowerShell abierto como administrador:
+> `powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea`.
+> Eso vale sólo para esa ejecución; no cambia la configuración del equipo.
 
 ## Documentación
 

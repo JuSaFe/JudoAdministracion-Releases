@@ -109,10 +109,15 @@ powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgr
 En Windows, `-ExecutionPolicy Bypass` **no es opcional**: sin él sale *«la ejecución de scripts está
 deshabilitada en este sistema»*, porque ésa es la directiva de fábrica y además un `.ps1` recién
 descomprimido de un `.zip` descargado lleva la marca de Internet. Afecta sólo a esa ejecución, no al
-equipo. Quien prefiera no escribirlo: botón derecho sobre **`preparar-servidor.cmd`**, que está en la
-misma carpeta → *Ejecutar como administrador*; hace exactamente lo mismo y admite los mismos
-parámetros. Lo que **no** hay que hacer es `Set-ExecutionPolicy`, que cambia la directiva del equipo
+equipo — lo que **no** hay que hacer es `Set-ExecutionPolicy`, que cambia la directiva del equipo
 entero y luego nadie la deja como estaba.
+
+`-InstalarPostgresql` y `-InstalarTarea` piden «instala todo lo que haga falta» sin tener que saber
+qué le falta al servidor de una vez anterior: repetirlos no hace daño si ya está hecho —el guion
+busca `psql.exe` y la tarea programada existente antes de tocar nada, y si ya están, no vuelve a
+instalarlos—. Lo que **no** hace por defecto, con o sin esos dos flags, es tocar una configuración o
+un certificado ya existentes: eso sólo pasa si se pide expresamente con `-ForzarConfiguracion` o
+`-RegenerarCertificado`.
 
 Si el paquete se ha descomprimido en otra carpeta, el guion se da cuenta: la carpeta del servicio es
 aquella en la que está él mismo. `--dir` (o `-Dir`) sólo hace falta para configurar un servicio que

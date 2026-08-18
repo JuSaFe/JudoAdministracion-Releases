@@ -16,15 +16,13 @@
     del guion está JudoAdministracion.Api.exe, ésa es la carpeta del servicio.
 
     Windows no ejecuta guiones .ps1 con la directiva por defecto (Restricted / RemoteSigned + marca
-    de Internet). Hay dos formas de lanzarlo, las dos válidas:
+    de Internet), así que hay que lanzarlo con -ExecutionPolicy Bypass, en PowerShell abierto como
+    administrador:
 
-        - Botón derecho sobre preparar-servidor.cmd -> "Ejecutar como administrador"
-          (el .cmd viene en el paquete y ya hace el Bypass y pasa los parámetros tal cual).
+        powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea
 
-        - En PowerShell abierto como administrador:
-              powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql
-
-    Bypass afecta sólo a esa invocación: no cambia la directiva del equipo.
+    Bypass afecta sólo a esa invocación: no cambia la directiva del equipo. No hace falta un
+    lanzador aparte: esto se ejecuta una sola vez, al preparar el servidor.
 
     Es idempotente: se puede volver a ejecutar sobre un servidor ya preparado. Lo que ya existe se
     respeta —la configuración y el certificado no se rehacen salvo que se pida— y lo que falta se
