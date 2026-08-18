@@ -133,6 +133,21 @@ if (-not (Test-Path $binario)) {
 }
 Bien "servicio encontrado en $Dir"
 
+# La aplicacion de escritorio, si este mismo equipo tambien la ejecuta, busca el servicio en
+# Program Files por defecto para arrancarlo ella sola (Services/Servidor/ServicioApiLocal.
+# LocalizarBinario; ver doc 00, 8.1). Si el paquete se ha descomprimido en Descargas o en otro
+# sitio -que es justo lo que pasa si se abre el .zip a doble clic sin fijarse en el destino-, el
+# guion funciona igual de bien, pero conviene avisar ahora y no que se descubra el dia del
+# campeonato, cuando la aplicacion no encuentre el servicio sola.
+$rutaRecomendada = Join-Path $env:ProgramFiles 'JudoAdministracionServidor'
+if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\')) {
+    Aviso "esta carpeta es $Dir, y la ruta que espera la aplicacion de escritorio para arrancar"
+    Aviso "el servicio ella sola es $rutaRecomendada."
+    Aviso "Si este equipo es SOLO servidor (sin la app de escritorio), no pasa nada. Si tambien"
+    Aviso "va a ejecutarla, MUEVE esta carpeta a $rutaRecomendada antes de continuar, o luego"
+    Aviso "indica RutaApi en su configuracion (doc 00, 8.1)."
+}
+
 # ¿Servidor nuevo o ya configurado? Se decide antes de tocar la base de datos, porque de ello depende
 # si las contraseñas de los roles se pueden cambiar o no.
 $conservarConfig = (Test-Path $config) -and (-not $ForzarConfiguracion)
@@ -201,9 +216,26 @@ if ((PsqlValor -Consulta "SELECT 1 FROM pg_database WHERE datname = '$Bd';") -eq
     Igual "ya existe, no se toca"
 }
 else {
-    # Las comillas dobles son imprescindibles: sin ellas PostgreSQL pasa el nombre a minusculas y la
-    # cadena de conexion de la aplicacion, que pide "JudoAdministracion", no la encontraria.
-    PsqlSuper -Argumentos @("-c", "CREATE DATABASE ""$Bd"" ENCODING 'UTF8' TEMPLATE template0;")
+    # Las comillas dobles alrededor del nombre son imprescindibles: sin ellas PostgreSQL pasa el
+    # nombre a minusculas y la cadena de conexion de la aplicacion, que pide "JudoAdministracion",
+    # no la encontraria. Pero NO pueden ir en un argumento -c: Windows PowerShell reconstruye la
+    # linea de comandos para el ejecutable nativo, y una comilla doble incrustada dentro de ese
+    # argumento se pierde por el camino. El sintoma es silencioso: psql no da ningun error, crea la
+    # base de datos igual, solo que sin comillas y por tanto en minusculas ("judoadministracion"),
+    # y el fallo no salta hasta la comprobacion de la codificacion de aqui abajo, que ya no
+    # encuentra ninguna fila con el nombre exacto que busca.
+    #
+    # La solucion es la misma que ya usa 01_roles.sql: pasar el nombre por -v y dejar que sea psql,
+    # leyendo un archivo con -f, quien interprete :"bd" como identificador entrecomillado. Dentro
+    # de un archivo no hay linea de comandos de por medio, asi que el problema no se puede dar.
+    $sqlCrear = Join-Path $env:TEMP "judo-crear-bd.sql"
+    Set-Content -Path $sqlCrear -Encoding ascii -Value 'CREATE DATABASE :"bd" ENCODING ''UTF8'' TEMPLATE template0;'
+    try {
+        PsqlSuper -Argumentos @("-v", "bd=$Bd", "-f", $sqlCrear)
+    }
+    finally {
+        Remove-Item $sqlCrear -Force -ErrorAction SilentlyContinue
+    }
     Bien "creada con codificacion UTF8"
 }
 
@@ -510,6 +542,10 @@ if (-not $conservarConfig) {
     Write-Host ""
 }
 Write-Host "   Queda por hacer, segun la guia de instalacion:"
+if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\')) {
+Write-Host "     - Mover esta carpeta a $rutaRecomendada, si este equipo tambien" -ForegroundColor Yellow
+Write-Host "       va a ejecutar la app de escritorio                            -> doc 00, 8.1" -ForegroundColor Yellow
+}
 Write-Host "     - Cambiar la contrasena de admin@judo.com, que es 'admin123'   -> 3.9"
 Write-Host "     - Dar de alta los usuarios de los puestos                      -> 3.9"
 Write-Host "     - Abrir el $Puerto al 192.168.2.0/24 y cerrar el 5432          -> doc 02, 3.3"

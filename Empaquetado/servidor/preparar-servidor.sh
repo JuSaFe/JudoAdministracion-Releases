@@ -209,6 +209,21 @@ if [[ ! -x "$BINARIO" ]]; then
 fi
 bien "servicio encontrado en $DIR_SERVICIO"
 
+# La aplicación de escritorio, si este mismo equipo también la ejecuta, busca el servicio en
+# /opt/judoadministracion-api por defecto para arrancarlo ella sola (Services/Servidor/
+# ServicioApiLocal.LocalizarBinario; ver doc 00, 8.1). Si el paquete se ha descomprimido en otro
+# sitio, el guion funciona igual de bien, pero conviene avisar ahora y no que se descubra el día
+# del campeonato, cuando la aplicación no encuentre el servicio sola.
+RUTA_RECOMENDADA="/opt/judoadministracion-api"
+RUTA_ACTUAL="$(cd "$DIR_SERVICIO" && pwd)"
+if [[ "$RUTA_ACTUAL" != "$RUTA_RECOMENDADA" ]]; then
+    aviso "esta carpeta es $RUTA_ACTUAL, y la ruta que espera la aplicación de escritorio"
+    aviso "para arrancar el servicio ella sola es $RUTA_RECOMENDADA."
+    aviso "Si este equipo es SOLO servidor (sin la app de escritorio), no pasa nada. Si"
+    aviso "también va a ejecutarla, MUEVE esta carpeta a $RUTA_RECOMENDADA antes de continuar,"
+    aviso "o indica RutaApi en su configuración (doc 00, 8.1)."
+fi
+
 # ¿Podemos escribir en la carpeta del servicio, o hará falta sudo para cada archivo?
 if [[ -w "$DIR_SERVICIO" ]]; then
     bien "la carpeta es escribible sin sudo"
@@ -759,6 +774,10 @@ if [[ $CONSERVAR_CONFIG -eq 0 ]]; then
     echo
 fi
 echo "   Queda por hacer, según la guía de instalación:"
+if [[ "$RUTA_ACTUAL" != "$RUTA_RECOMENDADA" ]]; then
+    echo "     ${AMARILLO}· Mover esta carpeta a $RUTA_RECOMENDADA, si este equipo también${FIN}"
+    echo "     ${AMARILLO}  va a ejecutar la app de escritorio                            → doc 00, §8.1${FIN}"
+fi
 echo "     · Cambiar la contraseña de admin@judo.com, que es 'admin123'   → §3.9"
 echo "     · Dar de alta los usuarios de los puestos                      → §3.9"
 echo "     · Abrir el $PUERTO al 192.168.2.0/24 y cerrar el 5432          → doc 02, §3.3"
