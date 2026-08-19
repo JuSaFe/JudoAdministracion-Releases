@@ -88,16 +88,18 @@ de sesión → **Red de la competición**. Ahí se elige la interfaz, el papel d
 hay un botón para deshacerlo al acabar. Ver la
 [01-Guía-de-Instalación.md](01-Guía-de-Instalación.md), §4.
 
-**En cualquier equipo, con o sin aplicación**, con el guion:
+**En cualquier equipo, con o sin aplicación**, con el guion. Viene en la carpeta `judo-puestos` que
+`preparar-servidor` deja en el servidor y que se lleva a los puestos en un USB (guía 01, §4); en el
+repositorio está en `Empaquetado/red/`:
 
 ```bash
-sudo Empaquetado/red/configurar-red.sh          # macOS y Linux
+sudo ./configurar-red.sh          # macOS y Linux
 ```
 
 ```powershell
 # Windows, como administrador. Sin -ExecutionPolicy Bypass: «la ejecución de scripts está
 # deshabilitada en este sistema». Afecta sólo a esta ejecución, no al equipo.
-powershell -ExecutionPolicy Bypass -File .\Empaquetado\red\configurar-red.ps1
+powershell -ExecutionPolicy Bypass -File .\configurar-red.ps1
 ```
 
 Pregunta lo justo: enseña las interfaces de red del equipo para elegir cuál se configura —que no es
@@ -109,7 +111,7 @@ responden** y propone una libre, que es la forma de no caer en el duplicado de �
 **Lo importante es que se deshace:**
 
 ```bash
-sudo Empaquetado/red/configurar-red.sh --deshacer
+sudo ./configurar-red.sh --deshacer
 ```
 
 Antes de tocar nada, el guion guarda la configuración anterior de esa interfaz en
@@ -253,6 +255,15 @@ Ningún dispositivo necesita hablar con otro dispositivo: **todo el tráfico es 
 
 ### 3.3 Firewall del servidor
 
+> **Lo hace `preparar-servidor`** (paso 9), con un matiz deliberado: **solo si ya había un
+> cortafuegos activo**. Activar uno que estaba apagado cambiaría el comportamiento del equipo mucho
+> más allá de esta aplicación. Reconoce `ufw` y `firewalld` en Linux y el cortafuegos de Windows; en
+> macOS no hay regla que poner, porque filtra por aplicación y no por puerto. Con
+> `--sin-cortafuegos` (`-SinCortafuegos`) no lo toca.
+
+El criterio, para hacerlo a mano o para revisar lo que dejó: **8443 abierto solo a `192.168.2.0/24`,
+5432 cerrado a todo lo que no sea `localhost`**.
+
 **Windows**, en PowerShell como administrador:
 
 ```powershell
@@ -265,13 +276,35 @@ New-NetFirewallRule -DisplayName "PostgreSQL bloqueado en LAN" -Direction Inboun
     -Protocol TCP -LocalPort 5432 -RemoteAddress 192.168.2.0/24 -Action Block
 ```
 
-**macOS / Linux** con `pf` o `ufw` según el sistema; el criterio es el mismo: 8443 abierto a
-`192.168.2.0/24`, 5432 cerrado a todo lo que no sea `localhost`.
+**Linux** con `ufw`:
+
+```bash
+sudo ufw allow proto tcp from 192.168.2.0/24 to any port 8443
+sudo ufw deny 5432/tcp
+```
+
+o con `firewalld`:
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule \
+    'rule family=ipv4 source address=192.168.2.0/24 port port=8443 protocol=tcp accept'
+sudo firewall-cmd --permanent --add-rich-rule \
+    'rule family=ipv4 port port=5432 protocol=tcp drop'
+sudo firewall-cmd --reload
+```
+
+**macOS** no necesita nada: su cortafuegos filtra por aplicación y no por puerto, y lo que importa
+—que PostgreSQL no salga a la red— lo decide `listen_addresses`, no el cortafuegos (§3.4).
 
 ### 3.4 Configuración de PostgreSQL
 
 Con la arquitectura de API central, PostgreSQL se queda **como está**, escuchando solo en local. No
-hay que tocar `listen_addresses` ni `pg_hba.conf`.
+hay que tocar `listen_addresses` ni `pg_hba.conf`. `preparar-servidor` lo comprueba y avisa si esa
+instalación viene abierta, cosa que pasa cuando se hereda un servidor de otra cosa:
+
+```bash
+psql -U postgres -c 'SHOW listen_addresses;'      # debe decir localhost
+```
 
 Si durante la transición necesitas que los puestos de administración conecten directamente,
 entonces sí:
@@ -304,9 +337,10 @@ el servicio). Y cuando la migración a la API se complete, **estas líneas deben
 
 La API usa HTTPS incluso dentro de la red local, porque por ella viajan credenciales de usuario y
 resultados de combate. Como no hay un dominio público, se emplea un certificado autofirmado
-generado una sola vez en el servidor con OpenSSL. **El procedimiento completo, con el archivo de
-configuración de los nombres, está en la [01-Guía-de-Instalación.md](01-Guía-de-Instalación.md),
-§3.4.**
+generado una sola vez en el servidor. **Lo emite `preparar-servidor` (paso 5)**, que además lo
+instala como raíz de confianza de ese mismo equipo y deja el `.crt` en la carpeta `judo-puestos` que
+se lleva a los puestos. El procedimiento a mano, con el archivo de configuración de los nombres, está
+en la [01-Guía-de-Instalación.md](01-Guía-de-Instalación.md), §3.4.
 
 Ese certificado (la parte pública, `.crt`) se instala en cada puesto, marcador y pantalla como
 entidad de confianza. Sin ese paso, los clientes rechazarán la conexión.
@@ -325,9 +359,8 @@ entidad de confianza. Sin ese paso, los clientes rechazarán la conexión.
 
 Ejecuta esta lista **el día antes**, no la mañana de la competición.
 
-> En los puestos, estas cinco comprobaciones las hace de una vez
-> `Empaquetado/puesto/preparar-puesto.sh` (paso 5), y las hace incluso con `--simular`, que no cambia
-> nada. Sigue mereciendo la pena saber qué se comprueba y en qué orden, porque es lo que dice en qué
+> En los puestos, estas cinco comprobaciones las hace de una vez `preparar-puesto` (paso 5), y las
+> hace incluso con `--simular`, que no cambia nada. Sigue mereciendo la pena saber qué se comprueba y en qué orden, porque es lo que dice en qué
 > capa está el problema.
 
 ### 5.1 En cada dispositivo

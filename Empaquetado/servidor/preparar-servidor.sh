@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 #
-# Prepara el servidor de competición de principio a fin: PostgreSQL, base de datos, roles,
-# extensiones, certificado HTTPS, configuración del servicio, esquema con sus datos básicos y, si se
-# pide, el servicio del sistema para que arranque solo al encender el equipo.
+# Deja el servidor de competición funcionando de una sola vez: PostgreSQL, base de datos, roles,
+# extensiones, certificado HTTPS, la configuración del servicio, el esquema con sus datos básicos,
+# la configuración de la aplicación de escritorio de este mismo equipo, el nombre en el archivo
+# hosts, el cortafuegos y el arranque automático.
 #
-# Es el equivalente ejecutable de la Documentación/01-Guía-de-Instalación.md, §3. Se lanza UNA vez,
-# en el equipo servidor, antes de instalar los puestos. Para macOS y Linux; el de Windows es
-# preparar-servidor.ps1.
+#     sudo ./preparar-servidor.sh
 #
-#     ./preparar-servidor.sh --dir /opt/judoadministracion-api
+# Sin ningún parámetro. Ésa es la idea: en un servidor recién formateado, esta línea es toda la
+# instalación. Todo lo que hace falta lo hace, y lo que no se puede decidir por nadie —la contraseña
+# del administrador y el alta de los usuarios— queda listado al final.
 #
-# Antes de ejecutarlo hay que haber descomprimido ahí el paquete del servicio (el api-<sistema> de
-# la Documentación/00). El guion comprueba que está.
+# Es el equivalente ejecutable de la Documentación/01-Guía-de-Instalación.md, §3. Para macOS y
+# Linux; el de Windows es preparar-servidor.ps1.
+#
+# Antes de ejecutarlo hay que haber descomprimido el paquete del servicio en /opt/judoadministracion-api
+# (el api-<sistema> de la Documentación/00). El guion, el SQL de roles y el ejecutable vienen todos
+# dentro de ese paquete, así que lo normal es lanzarlo desde ahí.
 #
 # Es idempotente: se puede volver a ejecutar sobre un servidor ya preparado. Lo que ya existe se
 # respeta —en particular la configuración y el certificado, que no se regeneran salvo que se pida
@@ -20,31 +25,57 @@
 set -euo pipefail
 
 # ── Parámetros ────────────────────────────────────────────────────────────────────────────────────
+#
+# Todas las opciones son para NO hacer algo. Por defecto se hace todo: un servidor de competición
+# necesita las diez cosas, y tener que acordarse de pedirlas una a una era la principal fuente de
+# instalaciones a medias.
 
 BD="JudoAdministracion"
 NOMBRE_SERVIDOR="judo-server"
 IP_SERVIDOR="192.168.2.3"
 DIR_SERVICIO="/opt/judoadministracion-api"
+DIR_APP=""
 SUPERUSUARIO="postgres"
 PUERTO=8443
 
 CLAVE_OWNER=""
 CLAVE_API=""
 CLAVE_PFX=""
+CLAVE_TOKENS=""
 
-INSTALAR_POSTGRESQL=0
-INSTALAR_SERVICIO=0
+SIN_POSTGRESQL=0
+SIN_SERVICIO=0
+SIN_APLICACION=0
+SIN_CONFIANZA=0
+SIN_HOSTS=0
+SIN_CORTAFUEGOS=0
+SIN_ESQUEMA=0
+
 REGENERAR_CERTIFICADO=0
 FORZAR_CONFIGURACION=0
-CONFIAR_CERTIFICADO=0
-SIN_ESQUEMA=0
 SIN_PREGUNTAS=0
 
 ayuda() {
     cat <<'AYUDA'
-Prepara el servidor de competición de JudoAdministración.
+Prepara el servidor de competición de JudoAdministración. Sin parámetros hace TODO lo que hace
+falta; las opciones sirven para quitar partes.
+
+  sudo ./preparar-servidor.sh
+
+Qué se puede NO hacer:
+
+  --sin-postgresql         No instalar PostgreSQL aunque falte (falla si no está)
+  --sin-servicio           No dejar la API arrancando sola al encender el equipo
+  --sin-aplicacion         No configurar la aplicación de escritorio de este equipo
+  --sin-confianza          No instalar el certificado como raíz de confianza de este equipo
+  --sin-hosts              No tocar el archivo hosts
+  --sin-cortafuegos        No tocar el cortafuegos
+  --sin-esquema            No inicializar el esquema (solo prepara la base de datos)
+
+Qué se puede cambiar:
 
   --dir RUTA               Carpeta del servicio (por defecto /opt/judoadministracion-api)
+  --dir-aplicacion RUTA    Carpeta de la aplicación de escritorio (si no, se busca)
   --bd NOMBRE              Base de datos (por defecto JudoAdministracion)
   --nombre NOMBRE          Nombre de red del servidor (por defecto judo-server)
   --ip DIRECCIÓN           IP del servidor (por defecto 192.168.2.3)
@@ -55,26 +86,20 @@ Prepara el servidor de competición de JudoAdministración.
   --clave-api CLAVE        Contraseña de judo_api   (por defecto, se genera)
   --clave-pfx CLAVE        Contraseña del certificado (por defecto, se genera)
 
-  --instalar-postgresql    Instala PostgreSQL si no está (usa brew, apt o dnf)
-  --instalar-servicio      Deja el servicio arrancando solo (systemd o launchd)
-  --confiar-certificado    Instala el certificado como raíz de confianza de ESTE equipo
-                           (hace falta si aquí va a correr también la aplicación: el anfitrión)
-  --regenerar-certificado  Rehace el certificado aunque ya exista
-  --forzar-configuracion   Reescribe appsettings.Local.json aunque ya exista
-  --sin-esquema            No inicializa el esquema (solo prepara la base de datos)
-  --si                     No pregunta nada
+  --regenerar-certificado  Rehacer el certificado aunque ya exista
+  --forzar-configuracion   Reescribir appsettings.Local.json aunque ya exista
+  --si                     No preguntar nada
   --ayuda                  Esto
 
-Ejemplo típico, servidor nuevo con todo:
-
-  sudo mkdir -p /opt/judoadministracion-api && sudo unzip api-1.0.0.1-linux-x64.zip -d /opt
-  ./preparar-servidor.sh --instalar-postgresql --instalar-servicio
+Al terminar deja las contraseñas en ~/judo-credenciales-servidor.txt y, en ~/judo-puestos/, todo
+lo que hay que llevarse a los puestos: el certificado público y los guiones de preparación.
 AYUDA
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dir)                    DIR_SERVICIO="$2"; shift 2 ;;
+        --dir-aplicacion)         DIR_APP="$2"; shift 2 ;;
         --bd)                     BD="$2"; shift 2 ;;
         --nombre)                 NOMBRE_SERVIDOR="$2"; shift 2 ;;
         --ip)                     IP_SERVIDOR="$2"; shift 2 ;;
@@ -83,14 +108,22 @@ while [[ $# -gt 0 ]]; do
         --clave-owner)            CLAVE_OWNER="$2"; shift 2 ;;
         --clave-api)              CLAVE_API="$2"; shift 2 ;;
         --clave-pfx)              CLAVE_PFX="$2"; shift 2 ;;
-        --instalar-postgresql)    INSTALAR_POSTGRESQL=1; shift ;;
-        --instalar-servicio)      INSTALAR_SERVICIO=1; shift ;;
-        --confiar-certificado)    CONFIAR_CERTIFICADO=1; shift ;;
+        --sin-postgresql)         SIN_POSTGRESQL=1; shift ;;
+        --sin-servicio)           SIN_SERVICIO=1; shift ;;
+        --sin-aplicacion)         SIN_APLICACION=1; shift ;;
+        --sin-confianza)          SIN_CONFIANZA=1; shift ;;
+        --sin-hosts)              SIN_HOSTS=1; shift ;;
+        --sin-cortafuegos)        SIN_CORTAFUEGOS=1; shift ;;
+        --sin-esquema)            SIN_ESQUEMA=1; shift ;;
         --regenerar-certificado)  REGENERAR_CERTIFICADO=1; shift ;;
         --forzar-configuracion)   FORZAR_CONFIGURACION=1; shift ;;
-        --sin-esquema)            SIN_ESQUEMA=1; shift ;;
         --si)                     SIN_PREGUNTAS=1; shift ;;
         --ayuda|-h)               ayuda; exit 0 ;;
+
+        # Nombres de la versión anterior, cuando había que pedir cada cosa. Ahora son el
+        # comportamiento por defecto; se aceptan para no romper notas ni guiones de nadie.
+        --instalar-postgresql|--instalar-servicio|--confiar-certificado) shift ;;
+
         *) echo "Parámetro desconocido: $1"; echo; ayuda; exit 1 ;;
     esac
 done
@@ -120,8 +153,21 @@ CONFIG="$DIR_SERVICIO/appsettings.Local.json"
 PFX="$DIR_SERVICIO/$NOMBRE_SERVIDOR.pfx"
 CRT="$DIR_SERVICIO/$NOMBRE_SERVIDOR.crt"
 KEY="$DIR_SERVICIO/$NOMBRE_SERVIDOR.key"
-CREDENCIALES="$HOME/judo-credenciales-servidor.txt"
 SISTEMA="$(uname)"
+HOSTS="/etc/hosts"
+MARCA_HOSTS="# JudoAdministracion"
+SUBRED="${IP_SERVIDOR%.*}.0/24"
+
+# Los archivos que el técnico se lleva del servidor van al home de quien ejecuta el guion, no al de
+# root: con sudo, HOME sigue siendo el suyo en Linux pero no siempre en macOS, así que se resuelve
+# desde SUDO_USER cuando lo hay.
+if [[ -n "${SUDO_USER:-}" ]]; then
+    HOGAR="$(eval echo "~$SUDO_USER")"
+else
+    HOGAR="$HOME"
+fi
+CREDENCIALES="$HOGAR/judo-credenciales-servidor.txt"
+PARA_PUESTOS="$HOGAR/judo-puestos"
 
 # ── Utilidades ────────────────────────────────────────────────────────────────────────────────────
 
@@ -146,14 +192,31 @@ confirmar() {
 # lo que quería, tr muere con SIGPIPE y, con pipefail activado, el guion entero se va al suelo.
 generar_clave() { openssl rand -hex 16; }           # 32 caracteres, 128 bits
 
-# Escribe en la carpeta del servicio, con sudo solo si hace falta. El guion NO se ejecuta entero
-# como root a propósito: en macOS con Homebrew, PostgreSQL responde al usuario que ha iniciado
+# Escribe donde haga falta, con sudo solo si el destino no es escribible. El guion NO se ejecuta
+# entero como root a propósito: en macOS con Homebrew, PostgreSQL responde al usuario que ha iniciado
 # sesión y no a root, así que elevar todo rompería psql.
-NECESITA_ROOT=0
 escribir() {                                        # escribir <ruta> < contenido por la entrada
-    if [[ $NECESITA_ROOT -eq 1 ]]; then sudo tee "$1" >/dev/null; else cat > "$1"; fi
+    local destino="$1" carpeta
+    carpeta="$(dirname "$destino")"
+
+    if [[ -w "$carpeta" ]] && { [[ ! -e "$destino" ]] || [[ -w "$destino" ]]; }; then
+        cat > "$destino"
+    else
+        sudo tee "$destino" >/dev/null
+    fi
 }
+
+permisos() { chmod "$@" 2>/dev/null || sudo chmod "$@"; }
+
+NECESITA_ROOT=0
 como_root() { if [[ $NECESITA_ROOT -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
+
+# Leer un valor de un appsettings.Local.json ya escrito. No hace falta un analizador de JSON: los
+# archivos que lee esto son los que escribe este mismo guion, con una propiedad por línea.
+leer_json() {                                       # leer_json <archivo> <propiedad>
+    [[ -f "$1" ]] || return 1
+    sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\(.*\)\".*/\1/p" "$1" | head -1
+}
 
 # ── psql con superusuario ─────────────────────────────────────────────────────────────────────────
 # Tres formas según el sistema, resueltas una vez:
@@ -190,7 +253,7 @@ echo "   carpeta    $DIR_SERVICIO"
 
 # ── 1. Comprobaciones previas ─────────────────────────────────────────────────────────────────────
 
-paso "1/9  Comprobaciones previas"
+paso "1/10  Comprobaciones previas"
 
 for herramienta in openssl curl; do
     command -v "$herramienta" >/dev/null || fallo "Falta $herramienta."
@@ -210,13 +273,13 @@ fi
 bien "servicio encontrado en $DIR_SERVICIO"
 
 # La aplicación de escritorio busca el servicio en /opt/judoadministracion-api por defecto para
-# arrancarlo ella sola (Services/Servidor/ServicioApiLocal.LocalizarBinario; ver doc 00, 8.1). Si
+# arrancarlo ella sola (Services/Servidor/ServicioApiLocal.LocalizarBinario; ver doc 00, §8.1). Si
 # el paquete se ha descomprimido en otro sitio, mejor pararse aquí que descubrirlo el día del
 # campeonato, cuando la aplicación no encuentre el servicio sola.
 RUTA_RECOMENDADA="/opt/judoadministracion-api"
 RUTA_ACTUAL="$(cd "$DIR_SERVICIO" && pwd)"
 if [[ "$RUTA_ACTUAL" != "$RUTA_RECOMENDADA" ]]; then
-    fallo "Esta carpeta es $RUTA_ACTUAL y debería ser $RUTA_RECOMENDADA (doc 00, 8.1).
+    fallo "Esta carpeta es $RUTA_ACTUAL y debería ser $RUTA_RECOMENDADA (doc 00, §8.1).
      Mueve ahí el paquete descomprimido y vuelve a ejecutar el guion."
 fi
 
@@ -238,13 +301,22 @@ CONSERVAR_CONFIG=0
 if [[ -f "$CONFIG" && $FORZAR_CONFIGURACION -eq 0 ]]; then
     CONSERVAR_CONFIG=1
     igual "hay configuración previa: se conservará, contraseñas incluidas"
+
+    # De esa configuración se puede recuperar lo que hace falta para los pasos que vienen después
+    # —configurar la aplicación de escritorio, sobre todo—, así que una segunda ejecución sirve
+    # para completar un servidor a medias en vez de quedarse a la mitad.
+    CADENA_EXISTENTE="$(leer_json "$CONFIG" ConnectionString || true)"
+    if [[ "$CADENA_EXISTENTE" == *"Username=judo_api;"* ]]; then
+        CLAVE_API="${CADENA_EXISTENTE##*Password=}"
+        bien "contraseña de judo_api recuperada de la configuración existente"
+    fi
 else
     bien "servidor nuevo: se generará la configuración"
 fi
 
 # ── 2. PostgreSQL ─────────────────────────────────────────────────────────────────────────────────
 
-paso "2/9  PostgreSQL"
+paso "2/10  PostgreSQL"
 
 instalar_postgresql() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
@@ -268,12 +340,11 @@ instalar_postgresql() {
 }
 
 if ! command -v psql >/dev/null; then
-    if [[ $INSTALAR_POSTGRESQL -eq 1 ]]; then
-        aviso "PostgreSQL no está instalado; instalando"
-        instalar_postgresql
-    else
-        fallo "PostgreSQL no está instalado. Añade --instalar-postgresql o instálalo a mano (guía §3.1)."
+    if [[ $SIN_POSTGRESQL -eq 1 ]]; then
+        fallo "PostgreSQL no está instalado y se ha pedido --sin-postgresql. Instálalo a mano (guía §3.1)."
     fi
+    aviso "PostgreSQL no está instalado; instalando"
+    instalar_postgresql
 fi
 
 resolver_psql || fallo "PostgreSQL está instalado pero no responde.
@@ -290,7 +361,7 @@ fi
 
 # ── 3. Base de datos ──────────────────────────────────────────────────────────────────────────────
 
-paso "3/9  Base de datos \"$BD\""
+paso "3/10  Base de datos \"$BD\""
 
 EXISTE_BD="$(psql_super -d postgres -tAc \
     "SELECT 1 FROM pg_database WHERE datname = '$BD';")"
@@ -321,7 +392,7 @@ fi
 
 # ── 4. Roles y extensiones ────────────────────────────────────────────────────────────────────────
 
-paso "4/9  Roles y extensiones"
+paso "4/10  Roles y extensiones"
 
 YA_HABIA_ROLES="$(psql_super -d postgres -tAc \
     "SELECT count(*) FROM pg_roles WHERE rolname IN ('judo_owner','judo_api');")"
@@ -427,7 +498,7 @@ bien "extensiones unaccent y pgcrypto instaladas"
 
 # ── 5. Certificado HTTPS ──────────────────────────────────────────────────────────────────────────
 
-paso "5/9  Certificado HTTPS"
+paso "5/10  Certificado HTTPS"
 
 if [[ $REGENERAR_CERTIFICADO -eq 1 && $CONSERVAR_CONFIG -eq 1 ]]; then
     fallo "--regenerar-certificado cambia la contraseña del .pfx, y la configuración existente
@@ -474,44 +545,45 @@ CNF
     escribir "$CRT" < "$TEMPORAL/servidor.crt"
     escribir "$PFX" < "$TEMPORAL/servidor.pfx"
     # La clave privada y el .pfx no los debe leer nadie más que el servicio.
-    como_root chmod 600 "$KEY" "$PFX"
-    como_root chmod 644 "$CRT"
+    permisos 600 "$KEY" "$PFX"
+    permisos 644 "$CRT"
     rm -rf "$TEMPORAL"
 
     bien "certificado emitido para $NOMBRE_SERVIDOR, localhost, $IP_SERVIDOR y 127.0.0.1"
     bien "válido 5 años"
 fi
 
-if [[ $CONFIAR_CERTIFICADO -eq 1 ]]; then
-    # Necesario si este equipo va a ejecutar también la aplicación de escritorio (el anfitrión):
-    # si no confía en el certificado, no puede conectarse a su propio servidor. En los puestos, este
-    # mismo paso está en la guía §4.2.
-    if [[ "$SISTEMA" == "Darwin" ]]; then
-        sudo security add-trusted-cert -d -r trustRoot \
-             -k /Library/Keychains/System.keychain "$CRT"
-        bien "certificado instalado en el llavero del sistema"
-    elif [[ -d /usr/local/share/ca-certificates ]]; then
-        sudo cp "$CRT" "/usr/local/share/ca-certificates/$NOMBRE_SERVIDOR.crt"
-        sudo update-ca-certificates >/dev/null
-        bien "certificado instalado en el almacén del sistema"
-    elif [[ -d /etc/pki/ca-trust/source/anchors ]]; then
-        sudo cp "$CRT" "/etc/pki/ca-trust/source/anchors/$NOMBRE_SERVIDOR.crt"
-        sudo update-ca-trust
-        bien "certificado instalado en el almacén del sistema"
-    else
-        aviso "no sé dónde instalar certificados en este sistema; hazlo a mano (guía §4.2)"
-    fi
+# Este equipo confía en su propio certificado salvo que se diga lo contrario. Hace falta siempre que
+# aquí vaya a correr también la aplicación de escritorio —el caso normal, el anfitrión—, y no
+# estorba cuando no: es un certificado emitido en esta misma máquina hace un momento.
+if [[ $SIN_CONFIANZA -eq 1 ]]; then
+    aviso "certificado sin instalar como raíz de confianza (--sin-confianza)"
+    aviso "si este equipo ejecuta la aplicación, no podrá conectarse a su propio servidor"
+elif [[ "$SISTEMA" == "Darwin" ]]; then
+    sudo security add-trusted-cert -d -r trustRoot \
+         -k /Library/Keychains/System.keychain "$CRT"
+    bien "certificado instalado en el llavero del sistema"
+elif [[ -d /usr/local/share/ca-certificates ]]; then
+    sudo cp "$CRT" "/usr/local/share/ca-certificates/$NOMBRE_SERVIDOR.crt"
+    sudo update-ca-certificates >/dev/null
+    bien "certificado instalado en el almacén del sistema"
+elif [[ -d /etc/pki/ca-trust/source/anchors ]]; then
+    sudo cp "$CRT" "/etc/pki/ca-trust/source/anchors/$NOMBRE_SERVIDOR.crt"
+    sudo update-ca-trust
+    bien "certificado instalado en el almacén del sistema"
+else
+    aviso "no sé dónde instalar certificados en este sistema; hazlo a mano (guía §4.2)"
 fi
 
 # ── 6. Configuración del servicio ─────────────────────────────────────────────────────────────────
 
-paso "6/9  Configuración del servicio"
+paso "6/10  Configuración del servicio"
 
 escribir_configuracion() {                          # escribir_configuracion <usuario> <clave> <inicializar>
     escribir "$CONFIG" <<JSON
 {
     "//": [
-        "Generado por Empaquetado/servidor/preparar-servidor.sh.",
+        "Generado por preparar-servidor.sh.",
         "Configuración REAL de este equipo: contraseña de la base de datos y clave de firma de",
         "tokens. No se sube a git y no la incluye ningún instalador.",
         "Ver Documentación/01-Guía-de-Instalación.md, §3.5."
@@ -528,7 +600,7 @@ escribir_configuracion() {                          # escribir_configuracion <us
     }
 }
 JSON
-    como_root chmod 600 "$CONFIG"
+    permisos 600 "$CONFIG"
 }
 
 if [[ $CONSERVAR_CONFIG -eq 1 ]]; then
@@ -548,7 +620,7 @@ fi
 
 # ── 7. Esquema, datos básicos y disparadores ───────────────────────────────────────────────────────
 
-paso "7/9  Esquema y datos básicos"
+paso "7/10  Esquema y datos básicos"
 
 if [[ $SIN_ESQUEMA -eq 1 ]]; then
     aviso "omitido por --sin-esquema"
@@ -558,11 +630,11 @@ elif [[ $CONSERVAR_CONFIG -eq 1 ]]; then
 else
     # Si algo ocupa ya el puerto, el servicio que vamos a lanzar no podrá escuchar y la espera de
     # abajo acabaría en un "no llegó a responder" que no dice cuál es el problema. El caso típico es
-    # tener el servicio ya instalado y en marcha (--instalar-servicio de una ejecución anterior).
+    # tener el servicio ya instalado y en marcha de una ejecución anterior.
     if command -v lsof >/dev/null && lsof -nP -iTCP:"$PUERTO" -sTCP:LISTEN >/dev/null 2>&1; then
         fallo "Ya hay algo escuchando en el puerto $PUERTO. Párala antes de inicializar:
        Linux  → sudo systemctl stop judo-api
-       macOS  → sudo launchctl unload /Library/LaunchDaemons/es.judo.api.plist
+       macOS  → sudo launchctl bootout system/es.judo.api
      Y si es un proceso lanzado a mano:
        pkill -f JudoAdministracion.Api"
     fi
@@ -654,9 +726,141 @@ else
     fi
 fi
 
-# ── 8. Servicio del sistema ───────────────────────────────────────────────────────────────────────
+# ── 8. La aplicación de escritorio de este equipo ─────────────────────────────────────────────────
+#
+# Lo normal es que el equipo servidor ejecute también la aplicación: es el ANFITRIÓN, el único desde
+# el que se pueden activar eventos (guía §5). Ese papel no se declara en ninguna parte: se lo gana
+# conectándose por localhost, así que todo lo que hace falta es que su appsettings.Local.json apunte
+# ahí. Escribirlo aquí es lo que evita el paso manual que antes había que recordar.
 
-paso "8/9  Arranque automático"
+paso "8/10  Aplicación de escritorio de este equipo"
+
+buscar_aplicacion() {
+    [[ -n "$DIR_APP" ]] && return 0
+    local candidata
+    for candidata in \
+        "/Applications/JudoAdministracion.app/Contents/MacOS" \
+        "/opt/judoadministracion" \
+        "$HOGAR/Applications/JudoAdministracion.app/Contents/MacOS"
+    do
+        if [[ -x "$candidata/JudoAdministracion" ]]; then DIR_APP="$candidata"; return 0; fi
+    done
+    return 1
+}
+
+CONFIG_APP=""
+if [[ $SIN_APLICACION -eq 1 ]]; then
+    aviso "omitido por --sin-aplicacion"
+elif ! buscar_aplicacion; then
+    aviso "la aplicación de escritorio no está instalada en este equipo"
+    aviso "si va a estarlo, instálala (guía §4.1) y vuelve a lanzar este guion: se configurará sola"
+elif [[ -z "$CLAVE_API" ]]; then
+    aviso "no conozco la contraseña de judo_api, así que no puedo escribir su configuración"
+    aviso "vuelve a lanzar el guion sobre este mismo servidor y la recuperará de $CONFIG"
+else
+    CONFIG_APP="$DIR_APP/appsettings.Local.json"
+
+    # ApiBaseUrl con localhost y no con el nombre del servidor: es exactamente lo que le identifica
+    # como anfitrión. Y la cadena de conexión va con judo_api, el mismo rol con el que corre el
+    # servicio: las pantallas que todavía no han pasado por la API solo hacen consultas y altas, y
+    # ninguna toca el esquema, así que no hay motivo para darle judo_owner a un programa de escritorio.
+    escribir "$CONFIG_APP" <<JSON
+{
+    "//": [
+        "Generado por preparar-servidor.sh.",
+        "Este equipo es el SERVIDOR y a la vez el ANFITRIÓN de la competición.",
+        "",
+        "ApiBaseUrl con localhost, y no con ${NOMBRE_SERVIDOR}, es lo que le identifica como anfitrión",
+        "y le habilita las operaciones que afectan a toda la red, como activar un evento.",
+        "",
+        "ConnectionString: la usan las pantallas que todavía no han pasado por la API. Va con el rol",
+        "judo_api, el mismo con el que corre el servicio. En los puestos de la red va vacía.",
+        "",
+        "Ver Documentación/01-Guía-de-Instalación.md, §5."
+    ],
+    "ApiBaseUrl": "https://localhost:$PUERTO",
+    "ConnectionString": "Host=localhost;Port=5432;Database=$BD;Username=judo_api;Password=$CLAVE_API",
+    "RutaApi": "$DIR_SERVICIO"
+}
+JSON
+    # Legible por la aplicación —que corre con la cuenta de quien la abre— pero no escribible por
+    # ella: la configuración de un equipo de competición no debe poder cambiarla quien lo usa.
+    permisos 644 "$CONFIG_APP"
+    bien "configurada como anfitrión en $DIR_APP"
+    bien "apunta a https://localhost:$PUERTO, con acceso directo a la base de datos"
+fi
+
+# ── 9. Red de este equipo ─────────────────────────────────────────────────────────────────────────
+
+paso "9/10  Nombre del servidor y cortafuegos"
+
+poner_hosts() {
+    if grep -q "$MARCA_HOSTS" "$HOSTS" 2>/dev/null; then
+        igual "la línea de $NOMBRE_SERVIDOR ya está en $HOSTS"
+        return
+    fi
+    printf '%s\t%s\t%s\n' "$IP_SERVIDOR" "$NOMBRE_SERVIDOR" "$MARCA_HOSTS" | sudo tee -a "$HOSTS" >/dev/null
+    bien "$NOMBRE_SERVIDOR → $IP_SERVIDOR en $HOSTS"
+}
+
+# El cortafuegos solo se toca si ya hay uno activo. Activar uno que estaba apagado cambiaría el
+# comportamiento del equipo mucho más allá de esta aplicación, y no es lo que nadie espera de un
+# guion de instalación.
+configurar_cortafuegos() {
+    if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+        sudo ufw allow proto tcp from "$SUBRED" to any port "$PUERTO" >/dev/null
+        # PostgreSQL solo se usa desde el propio servidor. Un DENY explícito para que quede escrito,
+        # aunque de fábrica ya escuche solo en localhost.
+        sudo ufw deny 5432/tcp >/dev/null
+        bien "ufw: $PUERTO/tcp abierto a $SUBRED, 5432/tcp cerrado"
+        return
+    fi
+
+    if command -v firewall-cmd >/dev/null && sudo firewall-cmd --state >/dev/null 2>&1; then
+        sudo firewall-cmd --permanent --add-rich-rule \
+            "rule family=ipv4 source address=$SUBRED port port=$PUERTO protocol=tcp accept" >/dev/null
+        sudo firewall-cmd --permanent --add-rich-rule \
+            "rule family=ipv4 port port=5432 protocol=tcp drop" >/dev/null
+        sudo firewall-cmd --reload >/dev/null
+        bien "firewalld: $PUERTO/tcp abierto a $SUBRED, 5432/tcp cerrado"
+        return
+    fi
+
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        # El cortafuegos de macOS filtra por aplicación y no por puerto, así que no hay regla que
+        # poner. Lo que importa —que PostgreSQL no salga a la red— se comprueba aquí abajo.
+        igual "macOS filtra por aplicación, no por puerto: no hay regla que añadir"
+        return
+    fi
+
+    igual "no hay ningún cortafuegos activo en este equipo"
+}
+
+if [[ $SIN_HOSTS -eq 1 ]]; then
+    igual "archivo hosts sin tocar (--sin-hosts)"
+else
+    poner_hosts
+fi
+
+if [[ $SIN_CORTAFUEGOS -eq 1 ]]; then
+    igual "cortafuegos sin tocar (--sin-cortafuegos)"
+else
+    configurar_cortafuegos
+fi
+
+# Que PostgreSQL no escuche en la red es la mitad importante del asunto, y no depende del
+# cortafuegos sino de listen_addresses. De fábrica está bien; se comprueba porque una instalación
+# heredada puede venir abierta.
+ESCUCHA_PG="$(psql_super -d postgres -tAc 'SHOW listen_addresses;' 2>/dev/null || echo '?')"
+if [[ "$ESCUCHA_PG" == "localhost" || "$ESCUCHA_PG" == "127.0.0.1" ]]; then
+    bien "PostgreSQL escucha solo en local"
+else
+    aviso "PostgreSQL escucha en \"$ESCUCHA_PG\" y debería hacerlo solo en local (doc 02, §3.4)"
+fi
+
+# ── 10. Servicio del sistema y comprobación ───────────────────────────────────────────────────────
+
+paso "10/10  Arranque automático"
 
 instalar_systemd() {
     local usuario="${SUDO_USER:-$(id -un)}"
@@ -706,36 +910,86 @@ instalar_launchd() {
 </plist>
 PLIST
     sudo chown root:wheel /Library/LaunchDaemons/es.judo.api.plist
-    sudo launchctl load -w /Library/LaunchDaemons/es.judo.api.plist
+    sudo launchctl bootout system/es.judo.api 2>/dev/null || true
+    sudo launchctl bootstrap system /Library/LaunchDaemons/es.judo.api.plist
 }
 
-if [[ $INSTALAR_SERVICIO -eq 0 ]]; then
-    aviso "no solicitado (--instalar-servicio). El servicio no arrancará solo al encender el equipo"
+if [[ $SIN_SERVICIO -eq 1 ]]; then
+    aviso "no se instala el arranque automático (--sin-servicio)"
+    aviso "la API habrá que arrancarla a mano, o desde el botón de la propia aplicación"
 elif [[ "$SISTEMA" == "Darwin" ]]; then
     instalar_launchd
     bien "launchd: es.judo.api instalado y arrancado"
-else
-    command -v systemctl >/dev/null || fallo "No hay systemd; configura el arranque a mano (doc 00, §7.3)."
+elif command -v systemctl >/dev/null; then
     instalar_systemd
     bien "systemd: judo-api instalado y arrancado"
+else
+    aviso "no hay systemd; configura el arranque a mano (doc 00, §7.3)"
+    SIN_SERVICIO=1
 fi
 
-# ── 9. Comprobación final y resumen ───────────────────────────────────────────────────────────────
-
-paso "9/9  Comprobación"
-
-if [[ $INSTALAR_SERVICIO -eq 1 ]]; then
+if [[ $SIN_SERVICIO -eq 0 ]]; then
     for _ in $(seq 1 20); do
-        curl -sf --cacert "$CRT" "https://localhost:$PUERTO/api/estado" >/dev/null 2>&1 && break
+        curl -sf "https://localhost:$PUERTO/api/estado" >/dev/null 2>&1 && break
         sleep 1
     done
-    if RESPUESTA="$(curl -sf --cacert "$CRT" "https://localhost:$PUERTO/api/estado" 2>/dev/null)"; then
-        bien "el servicio responde: $RESPUESTA"
+    # Sin --cacert a propósito: si esto responde, es que el certificado del paso 5 está bien
+    # instalado en el almacén del sistema y la aplicación de escritorio va a poder conectar. Es la
+    # misma prueba de fuego que hace preparar-puesto en los puestos.
+    if RESPUESTA="$(curl -sf "https://localhost:$PUERTO/api/estado" 2>/dev/null)"; then
+        bien "el servicio responde y su certificado es de confianza aquí: $RESPUESTA"
+    elif curl -sfk "https://localhost:$PUERTO/api/estado" >/dev/null 2>&1; then
+        aviso "el servicio responde, pero su certificado no es de confianza en este equipo"
+        aviso "la aplicación de escritorio de aquí no podrá conectar; revisa el paso 5"
     else
         aviso "el servicio no responde todavía; mira el registro:"
         [[ "$SISTEMA" == "Darwin" ]] && aviso "  tail -f /var/log/judo-api.error.log" \
                                      || aviso "  journalctl -u judo-api -f"
     fi
+fi
+
+# ── Resumen ───────────────────────────────────────────────────────────────────────────────────────
+
+# Todo lo que hay que llevarse a los puestos, en una sola carpeta del home: el certificado público
+# y los guiones de preparación, para los dos sistemas. Se copia a un USB y se va de puesto en puesto
+# sin volver a pensar qué archivo hacía falta ni sacarlo de una carpeta del sistema con sudo.
+if [[ -f "$CRT" ]]; then
+    mkdir -p "$PARA_PUESTOS"
+    cp "$CRT" "$PARA_PUESTOS/" 2>/dev/null || sudo cp "$CRT" "$PARA_PUESTOS/"
+
+    # Los guiones vienen dentro del paquete del servicio (doc 00, §8.1). Si este guion se está
+    # ejecutando desde el repositorio no están ahí, y se cogen de su sitio de siempre.
+    for origen in "$DIR_SERVICIO/Puestos" "$RAIZ/Empaquetado/puesto" "$RAIZ/Empaquetado/red"; do
+        [[ -d "$origen" ]] || continue
+        cp "$origen"/preparar-puesto.* "$PARA_PUESTOS/" 2>/dev/null || true
+        cp "$origen"/configurar-red.*  "$PARA_PUESTOS/" 2>/dev/null || true
+    done
+
+    cat > "$PARA_PUESTOS/LEEME.txt" <<TEXTO
+Preparación de un puesto de administración de JudoAdministración
+
+Copia esta carpeta a un USB y llévala a cada puesto. En cada uno, con la aplicación ya
+instalada (Documentación/01-Guía-de-Instalación.md, §4.1):
+
+  1. Dirección IP fija            macOS y Linux   sudo ./configurar-red.sh
+                                  Windows         powershell -ExecutionPolicy Bypass -File .\configurar-red.ps1
+
+  2. Certificado, nombre y        macOS y Linux   sudo ./preparar-puesto.sh
+     configuración                Windows         powershell -ExecutionPolicy Bypass -File .\preparar-puesto.ps1
+
+El segundo termina comprobando que el puesto llega al servidor. Si las cuatro comprobaciones
+salen en verde, el puesto está listo.
+
+Al acabar la competición, los dos con --deshacer (-Deshacer en Windows) devuelven el equipo a
+como estaba.
+
+Servidor: $NOMBRE_SERVIDOR ($IP_SERVIDOR), puerto $PUERTO
+Certificado: $NOMBRE_SERVIDOR.crt   (el .pfx y el .key NO salen del servidor)
+TEXTO
+
+    chmod -R u+rwX,go+rX "$PARA_PUESTOS" 2>/dev/null || true
+    chmod +x "$PARA_PUESTOS"/*.sh 2>/dev/null || true
+    [[ -n "${SUDO_USER:-}" ]] && sudo chown -R "$SUDO_USER" "$PARA_PUESTOS" 2>/dev/null || true
 fi
 
 if [[ $CONSERVAR_CONFIG -eq 0 ]]; then
@@ -750,7 +1004,7 @@ Carpeta            $DIR_SERVICIO
 
 PostgreSQL
   judo_owner       $CLAVE_OWNER      (dueño del esquema; migraciones y copias de seguridad)
-  judo_api         $CLAVE_API      (con el que corre el servicio)
+  judo_api         $CLAVE_API      (con el que corre el servicio y la aplicación de este equipo)
 
 Certificado
   $(basename "$PFX")   $CLAVE_PFX
@@ -759,6 +1013,7 @@ GUARDA ESTE ARCHIVO FUERA DE ESTE EQUIPO. Sin estas contraseñas, una copia de s
 restaurada no deja el servidor funcionando (Documentación/01-Guía-de-Instalación.md, §8).
 TEXTO
     chmod 600 "$CREDENCIALES"
+    [[ -n "${SUDO_USER:-}" ]] && chown "$SUDO_USER" "$CREDENCIALES" 2>/dev/null || true
 fi
 
 echo
@@ -769,12 +1024,13 @@ if [[ $CONSERVAR_CONFIG -eq 0 ]]; then
     echo "   ${AMARILLO}Cópialas fuera de este equipo y bórralas de aquí cuando lo hayas hecho.${FIN}"
     echo
 fi
-echo "   Queda por hacer, según la guía de instalación:"
-echo "     · Cambiar la contraseña de admin@judo.com, que es 'admin123'   → §3.9"
-echo "     · Dar de alta los usuarios de los puestos                      → §3.9"
-echo "     · Abrir el $PUERTO al 192.168.2.0/24 y cerrar el 5432          → doc 02, §3.3"
-echo "     · Copiar $NOMBRE_SERVIDOR.crt a cada puesto e instalarlo       → §4.2"
+echo "   ${AZUL}Queda por hacer:${FIN}"
+echo "     1. Abrir la aplicación en este equipo y entrar con admin@judo.com / admin123"
+echo "     2. Cambiarle la contraseña y dar de alta los usuarios de los puestos    → guía §3.9"
+echo "     3. En cada puesto, con la carpeta de abajo en un USB:"
+echo "          sudo ./configurar-red.sh  y  sudo ./preparar-puesto.sh             → guía §4"
 echo
-echo "   El certificado que hay que repartir a los puestos:"
-echo "     $CRT"
+echo "   Lo que hay que llevarse a los puestos, en una sola carpeta:"
+echo "     $PARA_PUESTOS"
+echo "     (el certificado y los guiones de preparación, con su LEEME.txt)"
 echo

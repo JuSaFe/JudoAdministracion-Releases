@@ -1,28 +1,30 @@
 <#
 .SYNOPSIS
-    Prepara el servidor de competición de JudoAdministración en Windows.
+    Deja el servidor de competición de JudoAdministración funcionando de una sola vez, en Windows.
 
 .DESCRIPTION
-    Equivalente de preparar-servidor.sh para Windows: PostgreSQL, base de datos, roles, extensiones,
-    certificado HTTPS, configuración del servicio, esquema con sus datos básicos y, si se pide, la
-    tarea programada que lo arranca al encender el equipo.
+    Equivalente de preparar-servidor.sh: PostgreSQL, base de datos, roles, extensiones, certificado
+    HTTPS, la configuración del servicio, el esquema con sus datos básicos, la configuración de la
+    aplicación de escritorio de este mismo equipo, el nombre en el archivo hosts, el cortafuegos y
+    la tarea programada que lo arranca al encender el equipo.
+
+        powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1
+
+    Sin ningún parámetro. Ésa es la idea: en un servidor recién formateado, esta línea es toda la
+    instalación. Los parámetros que hay sirven para NO hacer algo, no para pedirlo.
 
     Es el equivalente ejecutable de la Documentación/01-Guía-de-Instalación.md, §3. Se lanza UNA vez,
     en el equipo servidor, antes de instalar los puestos.
 
     Antes de ejecutarlo hay que haber descomprimido el paquete del servicio (el api-win-x64 de la
-    Documentación/00) en la carpeta que se indique con -Dir. Este guion y el SQL de roles vienen
-    DENTRO de ese paquete, así que lo normal es ejecutarlo desde ahí y no indicar -Dir: si al lado
-    del guion está JudoAdministracion.Api.exe, ésa es la carpeta del servicio.
+    Documentación/00) en C:\Program Files\JudoAdministracionServidor. Este guion, el SQL de roles y
+    los guiones de los puestos vienen DENTRO de ese paquete, así que lo normal es ejecutarlo desde
+    ahí y no indicar -Dir.
 
     Windows no ejecuta guiones .ps1 con la directiva por defecto (Restricted / RemoteSigned + marca
     de Internet), así que hay que lanzarlo con -ExecutionPolicy Bypass, en PowerShell abierto como
-    administrador:
-
-        powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea
-
-    Bypass afecta sólo a esa invocación: no cambia la directiva del equipo. No hace falta un
-    lanzador aparte: esto se ejecuta una sola vez, al preparar el servidor.
+    administrador. Bypass afecta sólo a esa invocación: no cambia la directiva del equipo. Lo que NO
+    hay que hacer es Set-ExecutionPolicy, que cambia la directiva del equipo entero.
 
     Es idempotente: se puede volver a ejecutar sobre un servidor ya preparado. Lo que ya existe se
     respeta —la configuración y el certificado no se rehacen salvo que se pida— y lo que falta se
@@ -34,15 +36,16 @@
     ejecución conviene hacerla con calma, leyendo lo que dice cada paso.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Dir "C:\Program Files\JudoAdministracionServidor"
+    powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea -Si
+    powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -SinCortafuegos -Si
 #>
 
 [CmdletBinding()]
 param(
     [string]   $Dir             = "C:\Program Files\JudoAdministracionServidor",
+    [string]   $DirAplicacion   = "C:\Program Files\JudoAdministracion",
     [string]   $Bd              = "JudoAdministracion",
     [string]   $Nombre          = "judo-server",
     [string]   $Ip              = "192.168.2.3",
@@ -52,13 +55,25 @@ param(
     [string]   $ClaveOwner,
     [string]   $ClaveApi,
     [string]   $ClavePfx,
-    [switch]   $InstalarPostgresql,
-    [switch]   $InstalarTarea,
+
+    # Todo lo de abajo es para NO hacer algo. Por defecto se hace todo.
+    [switch]   $SinPostgresql,
+    [switch]   $SinTarea,
+    [switch]   $SinAplicacion,
+    [switch]   $SinConfianza,
+    [switch]   $SinHosts,
+    [switch]   $SinCortafuegos,
+    [switch]   $SinEsquema,
+
     [switch]   $RegenerarCertificado,
     [switch]   $ForzarConfiguracion,
-    [switch]   $ConfiarCertificado,
-    [switch]   $SinEsquema,
-    [switch]   $Si
+    [switch]   $Si,
+
+    # Nombres de la versión anterior, cuando había que pedir cada cosa. Ahora son el comportamiento
+    # por defecto; se aceptan para no romper notas ni guiones de nadie.
+    [switch]   $InstalarPostgresql,
+    [switch]   $InstalarTarea,
+    [switch]   $ConfiarCertificado
 )
 
 $ErrorActionPreference = "Stop"
@@ -79,6 +94,21 @@ function GenerarClave {
     ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
 }
 
+# Sin BOM: el lector de configuración de .NET lo admite, pero un JSON con BOM da problemas en otras
+# herramientas y no cuesta nada evitarlo.
+function EscribirTexto ($ruta, $contenido) {
+    [IO.File]::WriteAllText($ruta, $contenido, (New-Object Text.UTF8Encoding($false)))
+}
+
+# Leer un valor de un appsettings.Local.json ya escrito. No hace falta un analizador de JSON: los
+# archivos que lee esto son los que escribe este mismo guion, con una propiedad por línea.
+function LeerJson ($ruta, $propiedad) {
+    if (-not (Test-Path $ruta)) { return $null }
+    $m = [regex]::Match((Get-Content $ruta -Raw), "`"$propiedad`"\s*:\s*`"([^`"]*)`"")
+    if ($m.Success) { return $m.Groups[1].Value }
+    return $null
+}
+
 # Se instala en Program Files y se registra una tarea del sistema: hace falta elevación.
 $identidad = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identidad)
@@ -88,28 +118,33 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 # Este guion se ejecuta en dos sitios distintos y las rutas no son las mismas en uno y en otro:
 #
-#   - Desde el paquete descomprimido en el servidor, que es el caso normal. Ahí el guion, el .exe y
-#     Despliegue\01_roles.sql están todos en la misma carpeta.
+#   - Desde el paquete descomprimido en el servidor, que es el caso normal. Ahí el guion, el .exe,
+#     Despliegue\01_roles.sql y Puestos\ están todos en la misma carpeta.
 #   - Desde el repositorio, que es lo que hace quien desarrolla. Ahí el SQL está en
 #     JudoAdministracion.Api\Despliegue\ y el servicio, donde diga -Dir.
 #
-# Si no se indica -Dir y al lado del guion está el ejecutable, la carpeta del servicio es ésa: es lo
-# que pasa al descomprimir el paquete en otro sitio que no sea C:\Program Files.
+# Si no se indica -Dir y al lado del guion está el ejecutable, la carpeta del servicio es ésa.
 if (-not $PSBoundParameters.ContainsKey('Dir')) {
     if (Test-Path (Join-Path $PSScriptRoot 'JudoAdministracion.Api.exe')) { $Dir = $PSScriptRoot }
 }
 
-$raiz        = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$sqlRoles    = @(
-    (Join-Path $PSScriptRoot 'Despliegue\01_roles.sql'),                      # dentro del paquete
-    (Join-Path $Dir          'Despliegue\01_roles.sql'),                      # paquete, con -Dir
+$raiz     = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$sqlRoles = @(
+    (Join-Path $PSScriptRoot 'Despliegue\01_roles.sql'),                        # dentro del paquete
+    (Join-Path $Dir          'Despliegue\01_roles.sql'),                        # paquete, con -Dir
     (Join-Path $raiz         'JudoAdministracion.Api\Despliegue\01_roles.sql')  # repositorio
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-$binario     = Join-Path $Dir "JudoAdministracion.Api.exe"
-$config      = Join-Path $Dir "appsettings.Local.json"
-$pfx         = Join-Path $Dir "$Nombre.pfx"
-$crt         = Join-Path $Dir "$Nombre.crt"
+
+$binario      = Join-Path $Dir "JudoAdministracion.Api.exe"
+$config       = Join-Path $Dir "appsettings.Local.json"
+$pfx          = Join-Path $Dir "$Nombre.pfx"
+$crt          = Join-Path $Dir "$Nombre.crt"
+$configApp    = Join-Path $DirAplicacion "appsettings.Local.json"
+$hosts        = "$env:SystemRoot\System32\drivers\etc\hosts"
+$marcaHosts   = "# JudoAdministracion"
+$subred       = ($Ip -replace '\.\d+$', '.0') + "/24"
 $credenciales = Join-Path $env:USERPROFILE "judo-credenciales-servidor.txt"
+$paraPuestos  = Join-Path $env:USERPROFILE "judo-puestos"
 
 Write-Host ""
 Write-Host "Preparacion del servidor de JudoAdministracion" -ForegroundColor Cyan
@@ -119,7 +154,7 @@ Write-Host "   carpeta    $Dir"
 
 # ── 1. Comprobaciones previas ─────────────────────────────────────────────────────────────────────
 
-Paso "1/9  Comprobaciones previas"
+Paso "1/10  Comprobaciones previas"
 
 if (-not $sqlRoles) {
     Fallo ("No encuentro Despliegue\01_roles.sql.`n" +
@@ -134,25 +169,36 @@ if (-not (Test-Path $binario)) {
 Bien "servicio encontrado en $Dir"
 
 # La aplicacion de escritorio busca el servicio en Program Files por defecto para arrancarlo ella
-# sola (Services/Servidor/ServicioApiLocal.LocalizarBinario; ver doc 00, 8.1). Si el paquete se ha
+# sola (Services/Servidor/ServicioApiLocal.LocalizarBinario; ver doc 00, §8.1). Si el paquete se ha
 # descomprimido en otro sitio -Descargas es el caso tipico, de abrir el .zip a doble clic sin
 # fijarse en el destino-, mejor pararse aqui que descubrirlo el dia del campeonato, cuando la
 # aplicacion no encuentre el servicio sola.
 $rutaRecomendada = Join-Path $env:ProgramFiles 'JudoAdministracionServidor'
 if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\')) {
-    Fallo ("Esta carpeta es $Dir y deberia ser $rutaRecomendada (doc 00, 8.1).`n" +
+    Fallo ("Esta carpeta es $Dir y deberia ser $rutaRecomendada (doc 00, §8.1).`n" +
            "        Mueve ahi el paquete descomprimido y vuelve a ejecutar el guion.")
 }
 
 # ¿Servidor nuevo o ya configurado? Se decide antes de tocar la base de datos, porque de ello depende
 # si las contraseñas de los roles se pueden cambiar o no.
 $conservarConfig = (Test-Path $config) -and (-not $ForzarConfiguracion)
-if ($conservarConfig) { Igual "hay configuracion previa: se conservara, contrasenas incluidas" }
-else                  { Bien  "servidor nuevo: se generara la configuracion" }
+if ($conservarConfig) {
+    Igual "hay configuracion previa: se conservara, contrasenas incluidas"
+
+    # De esa configuración se puede recuperar lo que hace falta para los pasos que vienen después
+    # —configurar la aplicación de escritorio, sobre todo—, así que una segunda ejecución sirve para
+    # completar un servidor a medias en vez de quedarse a la mitad.
+    $cadenaExistente = LeerJson $config 'ConnectionString'
+    if ($cadenaExistente -and $cadenaExistente -match 'Username=judo_api;Password=(.+)$') {
+        $ClaveApi = $Matches[1]
+        Bien "contrasena de judo_api recuperada de la configuracion existente"
+    }
+}
+else { Bien "servidor nuevo: se generara la configuracion" }
 
 # ── 2. PostgreSQL ─────────────────────────────────────────────────────────────────────────────────
 
-Paso "2/9  PostgreSQL"
+Paso "2/10  PostgreSQL"
 
 function BuscarPsql {
     $enPath = Get-Command psql.exe -ErrorAction SilentlyContinue
@@ -165,19 +211,17 @@ function BuscarPsql {
 
 $psql = BuscarPsql
 if (-not $psql) {
-    if ($InstalarPostgresql) {
-        Aviso "PostgreSQL no esta instalado; instalando con winget"
-        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Fallo "No hay winget. Instala PostgreSQL a mano (guia 01, 3.1) y vuelve a ejecutar."
-        }
-        winget install --id PostgreSQL.PostgreSQL.18 --accept-package-agreements --accept-source-agreements
-        $psql = BuscarPsql
-        if (-not $psql) { Fallo "La instalacion no ha dejado psql.exe donde se esperaba." }
-        Aviso "winget instala con la contrasena de superusuario que pida su asistente; tenla a mano"
+    if ($SinPostgresql) {
+        Fallo "PostgreSQL no esta instalado y se ha pedido -SinPostgresql. Instalalo a mano (guia 01, 3.1)."
     }
-    else {
-        Fallo "PostgreSQL no esta instalado. Anade -InstalarPostgresql o instalalo a mano (guia 01, 3.1)."
+    Aviso "PostgreSQL no esta instalado; instalando con winget"
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Fallo "No hay winget. Instala PostgreSQL a mano (guia 01, 3.1) y vuelve a ejecutar."
     }
+    winget install --id PostgreSQL.PostgreSQL.18 --accept-package-agreements --accept-source-agreements
+    $psql = BuscarPsql
+    if (-not $psql) { Fallo "La instalacion no ha dejado psql.exe donde se esperaba." }
+    Aviso "winget instala con la contrasena de superusuario que pida su asistente; tenla a mano"
 }
 Bien "psql en $psql"
 
@@ -206,7 +250,7 @@ Bien "PostgreSQL $version responde"
 
 # ── 3. Base de datos ──────────────────────────────────────────────────────────────────────────────
 
-Paso "3/9  Base de datos `"$Bd`""
+Paso "3/10  Base de datos `"$Bd`""
 
 if ((PsqlValor -Consulta "SELECT 1 FROM pg_database WHERE datname = '$Bd';") -eq "1") {
     Igual "ya existe, no se toca"
@@ -249,7 +293,7 @@ else {
 
 # ── 4. Roles y extensiones ────────────────────────────────────────────────────────────────────────
 
-Paso "4/9  Roles y extensiones"
+Paso "4/10  Roles y extensiones"
 
 if ($conservarConfig) {
     # Roles y permisos si, contrasenas no: las que hay son las que conoce la configuracion existente.
@@ -271,7 +315,7 @@ Bien "extensiones unaccent y pgcrypto instaladas"
 
 # ── 5. Certificado HTTPS ──────────────────────────────────────────────────────────────────────────
 
-Paso "5/9  Certificado HTTPS"
+Paso "5/10  Certificado HTTPS"
 
 if ($RegenerarCertificado -and $conservarConfig) {
     Fallo "-RegenerarCertificado cambia la contrasena del .pfx y la configuracion existente se`n        quedaria con la vieja. Anade -ForzarConfiguracion (cierra las sesiones abiertas) o`n        pasa -ClavePfx con la contrasena actual."
@@ -314,24 +358,29 @@ else {
     Bien "valido 5 anos"
 }
 
-if ($ConfiarCertificado) {
-    # Necesario si este equipo va a ejecutar tambien la aplicacion de escritorio (el anfitrion):
-    # si no confia en el certificado, no puede conectarse a su propio servidor.
+# Este equipo confia en su propio certificado salvo que se diga lo contrario. Hace falta siempre que
+# aqui vaya a correr tambien la aplicacion de escritorio -el caso normal, el anfitrion- y no estorba
+# cuando no: es un certificado emitido en esta misma maquina hace un momento.
+if ($SinConfianza) {
+    Aviso "certificado sin instalar como raiz de confianza (-SinConfianza)"
+    Aviso "si este equipo ejecuta la aplicacion, no podra conectarse a su propio servidor"
+}
+else {
     Import-Certificate -FilePath $crt -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
     Bien "certificado instalado como raiz de confianza de este equipo"
 }
 
 # ── 6. Configuración del servicio ─────────────────────────────────────────────────────────────────
 
-Paso "6/9  Configuracion del servicio"
+Paso "6/10  Configuracion del servicio"
 
 function EscribirConfiguracion {
     param([string]$Usuario, [string]$Clave, [bool]$Inicializar)
 
-    $contenido = @"
+    EscribirTexto $config @"
 {
     "//": [
-        "Generado por Empaquetado/servidor/preparar-servidor.ps1.",
+        "Generado por preparar-servidor.ps1.",
         "Configuracion REAL de este equipo: contrasena de la base de datos y clave de firma de",
         "tokens. No se sube a git y no la incluye ningun instalador.",
         "Ver Documentacion/01-Guia-de-Instalacion.md, 3.5."
@@ -348,9 +397,6 @@ function EscribirConfiguracion {
     }
 }
 "@
-    # Sin BOM: el lector de configuracion de .NET lo admite, pero un JSON con BOM da problemas en
-    # otras herramientas y no cuesta nada evitarlo.
-    [IO.File]::WriteAllText($config, $contenido, (New-Object Text.UTF8Encoding($false)))
 }
 
 if ($conservarConfig) {
@@ -373,7 +419,7 @@ else {
 
 # ── 7. Esquema, datos básicos y disparadores ───────────────────────────────────────────────────────
 
-Paso "7/9  Esquema y datos basicos"
+Paso "7/10  Esquema y datos basicos"
 
 function EsperarServicio {
     param([int]$Segundos = 40)
@@ -406,10 +452,11 @@ else {
                              -RedirectStandardOutput $registro -RedirectStandardError "$registro.err" `
                              -WindowStyle Hidden
 
-    # Para que Invoke-RestMethod valide el certificado hace falta confiar en el; si no se ha pedido
-    # -ConfiarCertificado, se confia solo durante esta comprobacion y se deshace al terminar.
+    # Para que Invoke-RestMethod valide el certificado hace falta confiar en el. Con el paso 5 por
+    # defecto ya se confia; solo cuando se ha pedido -SinConfianza hay que confiar durante esta
+    # comprobacion y deshacerlo al terminar.
     $confianzaTemporal = $false
-    if (-not $ConfiarCertificado) {
+    if ($SinConfianza) {
         $importado = Import-Certificate -FilePath $crt -CertStoreLocation "Cert:\LocalMachine\Root"
         $confianzaTemporal = $true
     }
@@ -472,12 +519,104 @@ else {
     $env:PGPASSWORD = $ClavePostgres
 }
 
-# ── 8. Arranque automático ────────────────────────────────────────────────────────────────────────
+# ── 8. La aplicación de escritorio de este equipo ─────────────────────────────────────────────────
+#
+# Lo normal es que el equipo servidor ejecute tambien la aplicacion: es el ANFITRION, el unico desde
+# el que se pueden activar eventos (guia 01, 5). Ese papel no se declara en ninguna parte: se lo gana
+# conectandose por localhost, asi que todo lo que hace falta es que su appsettings.Local.json apunte
+# ahi. Escribirlo aqui es lo que evita el paso manual que antes habia que recordar.
 
-Paso "8/9  Arranque automatico"
+Paso "8/10  Aplicacion de escritorio de este equipo"
 
-if (-not $InstalarTarea) {
-    Aviso "no solicitado (-InstalarTarea). El servicio no arrancara solo al encender el equipo"
+if ($SinAplicacion) {
+    Aviso "omitido por -SinAplicacion"
+}
+elseif (-not (Test-Path (Join-Path $DirAplicacion "JudoAdministracion.exe"))) {
+    Aviso "la aplicacion de escritorio no esta instalada en $DirAplicacion"
+    Aviso "si va a estarlo, instalala (guia 01, 4.1) y vuelve a lanzar este guion: se configurara sola"
+}
+elseif (-not $ClaveApi) {
+    Aviso "no conozco la contrasena de judo_api, asi que no puedo escribir su configuracion"
+    Aviso "vuelve a lanzar el guion sobre este mismo servidor y la recuperara de $config"
+}
+else {
+    # ApiBaseUrl con localhost y no con el nombre del servidor: es exactamente lo que le identifica
+    # como anfitrion. Y la cadena de conexion va con judo_api, el mismo rol con el que corre el
+    # servicio: las pantallas que todavia no han pasado por la API solo hacen consultas y altas, y
+    # ninguna toca el esquema, asi que no hay motivo para darle judo_owner a un programa de escritorio.
+    EscribirTexto $configApp @"
+{
+    "//": [
+        "Generado por preparar-servidor.ps1.",
+        "Este equipo es el SERVIDOR y a la vez el ANFITRION de la competicion.",
+        "",
+        "ApiBaseUrl con localhost -y no con $Nombre- es lo que le identifica como anfitrion",
+        "y le habilita las operaciones que afectan a toda la red, como activar un evento.",
+        "",
+        "ConnectionString: la usan las pantallas que todavia no han pasado por la API. Va con el rol",
+        "judo_api, el mismo con el que corre el servicio. En los puestos de la red va vacia.",
+        "",
+        "Ver Documentacion/01-Guia-de-Instalacion.md, 5."
+    ],
+    "ApiBaseUrl": "https://localhost:$Puerto",
+    "ConnectionString": "Host=localhost;Port=5432;Database=$Bd;Username=judo_api;Password=$ClaveApi",
+    "RutaApi": "$($Dir -replace '\\','\\')"
+}
+"@
+    Bien "configurada como anfitrion en $DirAplicacion"
+    Bien "apunta a https://localhost:$Puerto, con acceso directo a la base de datos"
+}
+
+# ── 9. Red de este equipo ─────────────────────────────────────────────────────────────────────────
+
+Paso "9/10  Nombre del servidor y cortafuegos"
+
+if ($SinHosts) {
+    Igual "archivo hosts sin tocar (-SinHosts)"
+}
+elseif ((Test-Path $hosts) -and (Get-Content $hosts | Where-Object { $_ -like "*$marcaHosts*" })) {
+    Igual "la linea de $Nombre ya esta en $hosts"
+}
+else {
+    Add-Content -Path $hosts -Value "$Ip`t$Nombre`t$marcaHosts" -Encoding ASCII
+    Bien "$Nombre -> $Ip en $hosts"
+}
+
+if ($SinCortafuegos) {
+    Igual "cortafuegos sin tocar (-SinCortafuegos)"
+}
+else {
+    # Las reglas llevan -Name propio para poder rehacerlas sin duplicarlas en cada ejecucion.
+    foreach ($regla in @(
+        @{ Nombre = 'JudoAdministracion-Api'
+           Titulo = "JudoAdministracion API ($Puerto/tcp desde $subred)"
+           Puerto = $Puerto; Accion = 'Allow'; Remoto = $subred },
+        @{ Nombre = 'JudoAdministracion-PostgreSQL-Bloqueado'
+           Titulo = 'JudoAdministracion PostgreSQL (5432/tcp bloqueado desde la red)'
+           Puerto = 5432;    Accion = 'Block'; Remoto = 'Any' }))
+    {
+        Remove-NetFirewallRule -Name $regla.Nombre -ErrorAction SilentlyContinue
+        New-NetFirewallRule -Name $regla.Nombre -DisplayName $regla.Titulo `
+            -Direction Inbound -Protocol TCP -LocalPort $regla.Puerto `
+            -RemoteAddress $regla.Remoto -Action $regla.Accion -Profile Any | Out-Null
+    }
+    Bien "cortafuegos: $Puerto/tcp abierto a $subred, 5432/tcp cerrado desde la red"
+}
+
+# Que PostgreSQL no escuche en la red es la mitad importante del asunto, y no depende del
+# cortafuegos sino de listen_addresses. De fabrica esta bien; se comprueba porque una instalacion
+# heredada puede venir abierta.
+$escuchaPg = PsqlValor -Consulta "SHOW listen_addresses;"
+if ($escuchaPg -eq "localhost" -or $escuchaPg -eq "127.0.0.1") { Bien "PostgreSQL escucha solo en local" }
+else { Aviso "PostgreSQL escucha en `"$escuchaPg`" y deberia hacerlo solo en local (doc 02, 3.4)" }
+
+# ── 10. Arranque automático y comprobación ────────────────────────────────────────────────────────
+
+Paso "10/10  Arranque automatico"
+
+if ($SinTarea) {
+    Aviso "no se instala el arranque automatico (-SinTarea)"
+    Aviso "la API habra que arrancarla a mano, o desde el boton de la propia aplicacion"
 }
 else {
     # Tarea programada y no servicio de Windows: el proyecto de la API es una aplicacion de consola
@@ -496,21 +635,65 @@ else {
         -Description "API de JudoAdministracion" -Force | Out-Null
     Start-ScheduledTask -TaskName "JudoAdministracionApi"
     Bien "tarea JudoAdministracionApi registrada y arrancada"
-}
 
-# ── 9. Comprobación final y resumen ───────────────────────────────────────────────────────────────
-
-Paso "9/9  Comprobacion"
-
-if ($InstalarTarea) {
-    if (-not $ConfiarCertificado) {
-        Aviso "sin -ConfiarCertificado no se puede comprobar por HTTPS desde aqui; hazlo desde un puesto"
+    # Invoke-RestMethod valida el certificado, asi que esto comprueba las dos cosas a la vez: que el
+    # servicio responde y que su certificado es de confianza en este equipo. Es la misma prueba de
+    # fuego que hace preparar-puesto en los puestos.
+    if ($SinConfianza) {
+        Aviso "con -SinConfianza no se puede comprobar por HTTPS desde aqui; hazlo desde un puesto"
     }
-    elseif (EsperarServicio -Segundos 20) { Bien "el servicio responde en https://localhost:$Puerto/api/estado" }
+    elseif (EsperarServicio -Segundos 20) {
+        Bien "el servicio responde en https://localhost:$Puerto/api/estado y su certificado es de confianza"
+    }
     else {
         Aviso "el servicio no responde todavia. Mira el estado de la tarea:"
         Aviso "  Get-ScheduledTaskInfo -TaskName JudoAdministracionApi"
     }
+}
+
+# ── Resumen ───────────────────────────────────────────────────────────────────────────────────────
+
+# Todo lo que hay que llevarse a los puestos, en una sola carpeta del perfil: el certificado publico
+# y los guiones de preparacion, para los dos sistemas. Se copia a un USB y se va de puesto en puesto
+# sin volver a pensar que archivo hacia falta.
+if (Test-Path $crt) {
+    New-Item -ItemType Directory -Force -Path $paraPuestos | Out-Null
+    Copy-Item $crt -Destination $paraPuestos -Force
+
+    # Los guiones vienen dentro del paquete del servicio (doc 00, 8.1). Si este guion se esta
+    # ejecutando desde el repositorio no estan ahi, y se cogen de su sitio de siempre.
+    foreach ($origen in @((Join-Path $Dir 'Puestos'),
+                          (Join-Path $raiz 'Empaquetado\puesto'),
+                          (Join-Path $raiz 'Empaquetado\red'))) {
+        if (-not (Test-Path $origen)) { continue }
+        # El comodin en la ruta es obligatorio: -Include sobre una carpeta a secas no filtra nada
+        # si no se anade -Recurse, y aqui no queremos recorrer subcarpetas.
+        Get-ChildItem (Join-Path $origen '*') -File -Include 'preparar-puesto.*', 'configurar-red.*' `
+                      -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $paraPuestos -Force
+    }
+
+    EscribirTexto (Join-Path $paraPuestos 'LEEME.txt') @"
+Preparacion de un puesto de administracion de JudoAdministracion
+
+Copia esta carpeta a un USB y llevala a cada puesto. En cada uno, con la aplicacion ya
+instalada (Documentacion/01-Guia-de-Instalacion.md, 4.1):
+
+  1. Direccion IP fija            Windows         powershell -ExecutionPolicy Bypass -File .\configurar-red.ps1
+                                  macOS y Linux   sudo ./configurar-red.sh
+
+  2. Certificado, nombre y        Windows         powershell -ExecutionPolicy Bypass -File .\preparar-puesto.ps1
+     configuracion                macOS y Linux   sudo ./preparar-puesto.sh
+
+El segundo termina comprobando que el puesto llega al servidor. Si las cuatro comprobaciones
+salen en verde, el puesto esta listo.
+
+Al acabar la competicion, los dos con -Deshacer (--deshacer en macOS y Linux) devuelven el
+equipo a como estaba.
+
+Servidor: $Nombre ($Ip), puerto $Puerto
+Certificado: $Nombre.crt   (el .pfx NO sale del servidor)
+"@
 }
 
 if (-not $conservarConfig) {
@@ -524,7 +707,7 @@ Carpeta            $Dir
 
 PostgreSQL
   judo_owner       $ClaveOwner      (dueno del esquema; migraciones y copias de seguridad)
-  judo_api         $ClaveApi      (con el que corre el servicio)
+  judo_api         $ClaveApi      (con el que corre el servicio y la aplicacion de este equipo)
 
 Certificado
   $Nombre.pfx   $ClavePfx
@@ -551,12 +734,12 @@ if (-not $conservarConfig) {
     Write-Host "   Copialas fuera de este equipo y borralas de aqui cuando lo hayas hecho." -ForegroundColor Yellow
     Write-Host ""
 }
-Write-Host "   Queda por hacer, segun la guia de instalacion:"
-Write-Host "     - Cambiar la contrasena de admin@judo.com, que es 'admin123'   -> 3.9"
-Write-Host "     - Dar de alta los usuarios de los puestos                      -> 3.9"
-Write-Host "     - Abrir el $Puerto al 192.168.2.0/24 y cerrar el 5432          -> doc 02, 3.3"
-Write-Host "     - Copiar $Nombre.crt a cada puesto e instalarlo                -> 4.2"
+Write-Host "   Queda por hacer:" -ForegroundColor Cyan
+Write-Host "     1. Abrir la aplicacion en este equipo y entrar con admin@judo.com / admin123"
+Write-Host "     2. Cambiarle la contrasena y dar de alta los usuarios de los puestos    -> guia 3.9"
+Write-Host "     3. En cada puesto, con la carpeta de abajo en un USB                    -> guia 4"
 Write-Host ""
-Write-Host "   El certificado que hay que repartir a los puestos:"
-Write-Host "     $crt"
+Write-Host "   Lo que hay que llevarse a los puestos, en una sola carpeta:"
+Write-Host "     $paraPuestos"
+Write-Host "     (el certificado y los guiones de preparacion, con su LEEME.txt)"
 Write-Host ""

@@ -25,19 +25,23 @@ específicos de un sistema operativo concreto están marcados.
 El orden **no** es negociable, porque cada paso necesita el anterior:
 
 ```
-1. Red y direcciones IP  ────────────▶ doc 02
-2. PostgreSQL en el servidor  ───────▶ §3.1  ┐
-3. Base de datos y roles  ───────────▶ §3.2, §3.3
-4. Certificado HTTPS  ───────────────▶ §3.4  ├─ los hace el guion de §3
-5. Servicio: primer arranque  ───────▶ §3.5, §3.6   (crea el esquema)
-6. Servicio como servicio del sistema ▶ §3.7  ┘
-7. Cortafuegos  ─────────────────────▶ §3.8
-8. Usuarios  ────────────────────────▶ §3.9
-9. Puestos  ─────────────────────────▶ §4
+ 1. Red y direcciones IP  ────────────▶ doc 02          configurar-red
+                                                        ╷
+ 2. PostgreSQL en el servidor  ───────▶ §3.1            │
+ 3. Base de datos y roles  ───────────▶ §3.2, §3.3      │
+ 4. Certificado HTTPS  ───────────────▶ §3.4            │
+ 5. Servicio: primer arranque  ───────▶ §3.5, §3.6      ├─ preparar-servidor
+ 6. Aplicación de este equipo  ───────▶ §5              │   (una sola orden,
+ 7. Cortafuegos  ─────────────────────▶ §3.8            │    sin parámetros)
+ 8. Arranque automático  ─────────────▶ §3.7            ╵
+
+ 9. Usuarios  ────────────────────────▶ §3.9            ← lo único manual
+
+10. Puestos  ─────────────────────────▶ §4              preparar-puesto
 ```
 
-Los pasos 2 a 6 están automatizados en `Empaquetado/servidor/preparar-servidor.sh` (o `.ps1` en
-Windows); ver el principio de §3.
+De los diez pasos, **uno solo requiere criterio humano**: dar de alta los usuarios (§3.9). Todo lo
+demás lo hacen dos guiones, uno en el servidor y otro en cada puesto, sin parámetros. Ver §3 y §4.
 
 Instalar un puesto antes de tener el servidor en pie no adelanta nada: no hay forma de comprobar que
 funciona.
@@ -87,33 +91,58 @@ el `.deb` declara como dependencias (doc 00, §7.2): `libx11-6`, `libice6`, `lib
 Ejemplo a lo largo de toda la sección: el servidor es el `192.168.2.3` y responde al nombre
 `judo-server`.
 
-### La vía rápida: un solo guion
+### Una sola orden
 
-Todo lo que describe esta sección —de §3.1 a §3.7— está automatizado. **El guion viene dentro del
-propio paquete del servicio**, junto al ejecutable y a la carpeta `Despliegue` con el SQL de roles
-que necesita: no hay que descargar nada más ni clonar el repositorio. En un servidor recién
-formateado, con el paquete ya descomprimido en su sitio:
+Toda esta sección —de §3.1 a §3.8, más el §5— está automatizada, y **el guion viene dentro del propio
+paquete del servicio**, junto al ejecutable, la carpeta `Despliegue` con el SQL de roles y la carpeta
+`Puestos` con los guiones que después se llevan a los puestos. No hay que descargar nada más ni
+clonar el repositorio. En un servidor recién formateado, con el paquete descomprimido en su sitio:
 
 ```bash
 # macOS y Linux
 cd /opt/judoadministracion-api
-sudo ./preparar-servidor.sh --instalar-postgresql --instalar-servicio
+sudo ./preparar-servidor.sh
 ```
 
 ```powershell
 # Windows, en PowerShell abierto COMO ADMINISTRADOR
 cd "C:\Program Files\JudoAdministracionServidor"
-powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -InstalarPostgresql -InstalarTarea
+powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1
 ```
 
-**La carpeta donde se descomprime el paquete es obligatoria**: `/opt/judoadministracion-api` en
-macOS y Linux, `C:\Program Files\JudoAdministracionServidor` en Windows. Es la ruta en la que la
-propia aplicación de escritorio busca el servicio para arrancarlo ella sola cuando el equipo que la
-ejecuta es también el servidor (doc 00, §8.1). Si el `.zip` se descomprime en otro sitio —Descargas
-es el caso típico, de abrir el paquete a doble clic sin fijarse en el destino— el guion **para en el
-primer paso con un error** y no continúa: muévelo a la carpeta correcta y vuelve a lanzarlo. Es así
-tanto si ese equipo va a ejecutar también la aplicación de escritorio como si no, para no depender de
-acordarse de nada más adelante.
+**Sin parámetros.** Ésa es la idea: un servidor de competición necesita las diez cosas de la lista de
+§1, y tener que acordarse de pedirlas una a una era la principal fuente de instalaciones a medias. En
+diez pasos el guion:
+
+| | Qué hace | Detalle |
+|---|---|---|
+| 1 | Comprueba que el paquete está donde debe y si el servidor es nuevo o ya estaba montado | §3.5 |
+| 2 | Instala PostgreSQL si falta y comprueba que responde | §3.1 |
+| 3 | Crea la base de datos con la codificación y la ordenación correctas | §3.2 |
+| 4 | Crea `judo_owner` y `judo_api` con contraseñas al azar, las extensiones, y reasigna los objetos que fueran de otra cuenta | §3.3, §9.1 |
+| 5 | Emite el certificado con todos los nombres que hacen falta **y lo instala como raíz de confianza de este equipo** | §3.4 |
+| 6 | Escribe el `appsettings.Local.json` del servicio | §3.5 |
+| 7 | Arranca el servicio, crea el esquema, siembra los datos básicos y **hace el cambio de rol** | §3.6 |
+| 8 | Escribe el `appsettings.Local.json` de **la aplicación de escritorio de este equipo**, como anfitrión | §5 |
+| 9 | Pone la línea de *hosts* y abre el 8443 a la subred cerrando el 5432 | §3.8, doc 02 §3.3 |
+| 10 | Registra el servicio del sistema, lo arranca y comprueba que responde por HTTPS de confianza | §3.7 |
+
+Al terminar deja dos cosas en el *home* de quien lo ejecutó:
+
+- **`judo-credenciales-servidor.txt`** — las tres contraseñas generadas. Hay que copiarlo fuera del
+  equipo y borrarlo de ahí; sin ellas, una copia de seguridad restaurada no deja el servidor
+  funcionando (§8).
+- **`judo-puestos/`** — el certificado público y los guiones de preparación de puestos, con un
+  `LEEME.txt`. Es la carpeta que se copia a un USB y se lleva de puesto en puesto (§4).
+
+Y deja escrito lo único que queda: cambiar la contraseña de `admin@judo.com` y dar de alta los
+usuarios (§3.9).
+
+**La carpeta donde se descomprime el paquete es obligatoria**: `/opt/judoadministracion-api` en macOS
+y Linux, `C:\Program Files\JudoAdministracionServidor` en Windows. Es la ruta en la que la propia
+aplicación de escritorio busca el servicio para arrancarlo ella sola (doc 00, §8.1). Si el paquete se
+descomprime en otro sitio —Descargas es el caso típico, de abrir el archivo a doble clic sin fijarse
+en el destino— el guion **para en el primer paso con un error** y no continúa.
 
 En Windows, `-ExecutionPolicy Bypass` **no es opcional**: sin él sale *«la ejecución de scripts está
 deshabilitada en este sistema»*, porque ésa es la directiva de fábrica y además un `.ps1` recién
@@ -121,37 +150,42 @@ descomprimido de un `.zip` descargado lleva la marca de Internet. Afecta sólo a
 equipo — lo que **no** hay que hacer es `Set-ExecutionPolicy`, que cambia la directiva del equipo
 entero y luego nadie la deja como estaba.
 
-`-InstalarPostgresql` y `-InstalarTarea` piden «instala todo lo que haga falta» sin tener que saber
-qué le falta al servidor de una vez anterior: repetirlos no hace daño si ya está hecho —el guion
-busca `psql.exe` y la tarea programada existente antes de tocar nada, y si ya están, no vuelve a
-instalarlos—. Lo que **no** hace por defecto, con o sin esos dos flags, es tocar una configuración o
-un certificado ya existentes: eso sólo pasa si se pide expresamente con `-ForzarConfiguracion` o
-`-RegenerarCertificado`.
+#### Cuando hace falta hacer menos
 
-Si el paquete se ha descomprimido en otra carpeta, el guion se da cuenta: la carpeta del servicio es
-aquella en la que está él mismo. `--dir` (o `-Dir`) sólo hace falta para configurar un servicio que
-esté en otro sitio distinto del guion.
+Todos los parámetros del guion sirven para **no** hacer algo, no para pedirlo. Los que se usan de
+verdad:
 
-En nueve pasos deja el servidor listo: instala PostgreSQL si falta, crea la base de datos con la
-codificación correcta, crea los roles con contraseñas generadas al azar, instala las extensiones,
-emite el certificado con todos los nombres que hacen falta, escribe la configuración, **hace por su
-cuenta el cambio de rol del primer arranque** (§3.6, que es el paso donde más fácil es equivocarse),
-comprueba que `judo_api` puede leer y no puede tocar el esquema, y registra el servicio del sistema.
-Al terminar deja las contraseñas en `~/judo-credenciales-servidor.txt`.
+| Parámetro | Cuándo |
+|---|---|
+| `--sin-postgresql` / `-SinPostgresql` | PostgreSQL ya está instalado y no se quiere que lo toque |
+| `--sin-aplicacion` / `-SinAplicacion` | El servidor **no** va a ejecutar la aplicación: el anfitrión es otro equipo (§5) |
+| `--sin-cortafuegos` / `-SinCortafuegos` | El cortafuegos lo gestiona otra persona o una directiva de dominio |
+| `--sin-servicio` / `-SinTarea` | No se quiere que la API arranque sola al encender el equipo |
+| `--sin-confianza` / `-SinConfianza` | El servidor no ejecuta la aplicación y no debe confiar en su propio certificado |
 
-Se puede volver a ejecutar tantas veces como se quiera. Lo que ya está hecho lo respeta, y en
-concreto **no toca la configuración ni las contraseñas de un servidor ya montado**: cambiarlas
-dejaría al servicio sin poder entrar en la base de datos y cerraría las sesiones abiertas. `--ayuda`
-lista todas las opciones.
+Y los que cambian valores: `--nombre`, `--ip`, `--puerto`, `--bd`, `--dir`. `--ayuda` los lista
+todos. El cortafuegos, además, **sólo se toca si ya había uno activo**: activar uno que estaba
+apagado cambiaría el comportamiento del equipo mucho más allá de esta aplicación.
 
-> El guion de macOS y Linux está probado de principio a fin. El de Windows sigue la misma lógica y
-> usa comandos estándar del sistema, pero **no se ha podido probar en un Windows real**: la primera
-> vez, ejecútalo leyendo lo que dice cada paso.
+#### Se puede volver a ejecutar
+
+Es idempotente, y eso es lo que lo hace útil más allá de la primera vez. Lo que ya está hecho lo
+respeta —en concreto **no toca la configuración ni las contraseñas de un servidor ya montado**:
+cambiarlas dejaría al servicio sin poder entrar en la base de datos y cerraría las sesiones
+abiertas—. Y lo que falta, lo completa: si la aplicación de escritorio se instala *después* del
+servicio, basta con volver a lanzarlo y la configurará, recuperando la contraseña de `judo_api` del
+`appsettings.Local.json` que ya escribió.
+
+> **Estado de las pruebas.** Los pasos 1 a 7 y el 10 del guion de macOS y Linux están probados de
+> principio a fin contra un servidor real. Los pasos 8 y 9 —la configuración de la aplicación de
+> escritorio y el cortafuegos— son nuevos y **todavía no se han ejecutado en una instalación real**;
+> el 9 no toca nada si no hay un cortafuegos activo. El guion de Windows sigue la misma lógica y usa
+> comandos estándar del sistema, pero **no se ha podido probar en un Windows real**. La primera vez,
+> ejecútalo leyendo lo que dice cada paso.
 
 **El resto de la sección sigue siendo útil**, y por eso está: explica *qué* hace cada paso y *por
 qué*, que es lo que se necesita cuando algo falla, cuando hay que hacerlo a mano, o cuando toca
-entender un servidor que montó otra persona. Lo que el guion **no** hace queda en §3.8 (cortafuegos)
-y §3.9 (usuarios).
+entender un servidor que montó otra persona.
 
 ### 3.1 PostgreSQL
 
@@ -328,6 +362,9 @@ anterior de este archivo, vuelve a ejecutarlo (`-v rotar_claves=off`) y comprueb
 
 ### 3.4 Certificado HTTPS
 
+> **Lo hace el guion** (paso 5), y además lo instala como raíz de confianza de este equipo, que es
+> lo que necesita el anfitrión para conectarse a su propio servidor.
+
 La API habla HTTPS incluso dentro de la red local, porque por ella viajan credenciales y resultados
 de combate (doc 02, §4). Como no hay dominio público, el certificado es autofirmado y se genera **una
 sola vez** en el servidor.
@@ -392,6 +429,9 @@ Quedan tres archivos con destinos distintos:
 
 ### 3.5 Instalar el servicio y configurarlo
 
+> **Lo hace el guion** (pasos 1 y 6). Esto explica qué escribe y por qué, que es lo que hace falta
+> cuando algo falla o cuando hay que tocar la configuración a mano.
+
 Descomprimir el paquete `api-<sistema>` de la doc 00 en su sitio definitivo:
 
 | Sistema | Ruta recomendada |
@@ -438,6 +478,10 @@ Cuatro valores que merecen atención:
 moderno lo hace bien, pero conviene comprobarlo si el servicio se queja de la configuración.
 
 ### 3.6 Primer arranque: crear el esquema
+
+> **Lo hace el guion** (paso 7), incluido el cambio de rol del final, que es donde más fácil es
+> equivocarse. Esto explica el baile completo, que hay que repetir a mano en cada actualización con
+> cambios de esquema (§7).
 
 Ejecutar el servicio **a mano**, en primer plano, para ver lo que hace:
 
@@ -503,6 +547,9 @@ otra vez `/api/estado`.
 
 ### 3.7 Dejarlo como servicio del sistema
 
+> **Lo hace el guion** (paso 10): `systemd` en Linux, `launchd` en macOS y una tarea programada al
+> inicio en Windows.
+
 Para que arranque solo al encender el equipo, aunque nadie inicie sesión. Las unidades y los
 comandos completos están en la doc 00:
 
@@ -526,11 +573,27 @@ sudo launchctl list | grep es.judo.api   # macOS
 
 ### 3.8 Cortafuegos
 
-Abrir el **8443** solo a la subred de la competición y dejar el **5432** cerrado a todo lo que no sea
-`localhost`. Los comandos por sistema están en la doc 02, §3.3, y la comprobación de que PostgreSQL
-*no* responde desde fuera —que debe fallar— en la doc 02, §5.3.
+**Lo hace el guion** (paso 9), así que normalmente no hay nada que hacer aquí. Lo que deja:
+
+- El **8443** abierto solo a la subred de la competición (`192.168.2.0/24`).
+- El **5432** cerrado a todo lo que no sea `localhost`.
+
+Con un matiz deliberado: **solo toca el cortafuegos si ya había uno activo**. Activar uno que estaba
+apagado cambiaría el comportamiento del equipo mucho más allá de esta aplicación, y no es lo que
+nadie espera de un guion de instalación. Reconoce `ufw` y `firewalld` en Linux y el cortafuegos de
+Windows; en macOS no hay regla que poner, porque filtra por aplicación y no por puerto.
+
+El guion comprueba además que PostgreSQL escuche solo en local (`listen_addresses`), que es la mitad
+importante del asunto y no depende del cortafuegos. Si avisa de lo contrario, la configuración está
+en la doc 02, §3.4.
+
+Los comandos por sistema, para hacerlo a mano, están en la doc 02, §3.3, y la comprobación de que
+PostgreSQL *no* responde desde fuera —que debe fallar— en la doc 02, §5.3.
 
 ### 3.9 Usuarios
+
+**Esto es lo único que el guion no hace**, porque es lo único que requiere criterio: quién entra, con
+qué contraseña y con qué papel.
 
 La inicialización deja un solo usuario:
 
@@ -588,18 +651,86 @@ conviene al menos borrar el historial (`history -c`) al terminar.
 
 ## 4. Instalación de un puesto de administración
 
-Repetir en cada equipo `192.168.2.5`–`.9`. Son tres pasos y hay que hacer los tres.
+Repetir en cada equipo `192.168.2.5`–`.9`. Son tres pasos y hay que hacer los tres, en este orden:
 
-### La vía rápida: desde la propia aplicación
+1. **Instalar la aplicación** con su instalador (§4.1).
+2. **Poner la IP fija** con `configurar-red` (doc 02, §2.2).
+3. **Preparar el puesto** con `preparar-puesto`: certificado, nombre, configuración y comprobación.
 
-Después de instalar la aplicación (§4.1), todo lo que queda se puede hacer **desde ella misma**, sin
-tocar una terminal: en la pantalla de inicio de sesión, la rueda dentada de arriba a la derecha →
-**Red de la competición**.
+Los dos últimos son dos órdenes sin parámetros, y están descritos justo aquí debajo.
 
-Esa pantalla está antes del login a propósito, y es la única que puede estarlo: si la red está mal no
-se puede iniciar sesión, así que es el único momento en que sirve de algo. Reúne los cuatro pasos de
-esta sección —dirección IP, nombre del servidor, certificado y comprobación— y trae dos cosas que
-merece la pena conocer:
+### Los dos guiones
+
+En el servidor, `preparar-servidor` dejó en el *home* una carpeta **`judo-puestos/`** con todo lo que
+hace falta aquí: el certificado público (`judo-server.crt`), los cuatro guiones de preparación —los
+de los dos sistemas, porque el servidor puede ser un Linux y los puestos, portátiles con Windows— y
+un `LEEME.txt`. Se copia a un USB y se lleva de puesto en puesto.
+
+En cada puesto, con la aplicación ya instalada (§4.1) y desde esa carpeta:
+
+```bash
+# macOS y Linux
+sudo ./configurar-red.sh          # 1. dirección IP fija y puerta de enlace
+sudo ./preparar-puesto.sh         # 2. certificado, nombre, configuración y comprobación
+```
+
+```powershell
+# Windows, en PowerShell como administrador. -ExecutionPolicy Bypass es imprescindible: sin él,
+# «la ejecución de scripts está deshabilitada en este sistema». Vale sólo para esa ejecución.
+powershell -ExecutionPolicy Bypass -File .\configurar-red.ps1
+powershell -ExecutionPolicy Bypass -File .\preparar-puesto.ps1
+```
+
+**Ninguno de los dos necesita parámetros.** `configurar-red` enseña las interfaces de red del equipo
+para elegir cuál se toca, propone la IP libre que le corresponde al rol —del `.5` al `.9` si es un
+puesto— y avisa si esa dirección ya responde. `preparar-puesto` encuentra el certificado solo (a su
+lado, en la carpeta desde la que se lanza, o en el *home*), comprueba **antes** que sirve para el
+nombre `judo-server` y no está caducado, lo instala, pone la línea de *hosts*, escribe la
+configuración de la aplicación y termina probando la cadena entera:
+
+```
+✓ 1. llego al servidor 192.168.2.3
+✓ 2. el nombre judo-server resuelve
+✓ 3. el puerto 8443 está abierto
+✓ 4. HTTPS de confianza: el servidor responde {"estado":"ok"}
+
+  Este puesto está listo.
+```
+
+Cada comprobación que falla dice en qué capa está el problema, en lugar de dejar un «no conecta»
+genérico.
+
+**Y los dos se deshacen**, que es lo que importa cuando el portátil es de alguien y esa tarde se lo
+lleva a su casa:
+
+```bash
+sudo ./preparar-puesto.sh --deshacer      # quita el certificado y la configuración
+sudo ./configurar-red.sh --deshacer       # devuelve la red a como estaba
+```
+
+El guion de red guarda la configuración anterior antes de tocar nada (en
+`/etc/judo-red-anterior.conf`, o `C:\ProgramData\JudoAdministracion\red-anterior.json`), así que el
+`--deshacer` no deja el equipo «en automático» a lo bruto: si tenía su propia IP fija y sus propios
+DNS, se los devuelve tal cual. Y de `/etc/hosts` quita solo las líneas que puso él, reconocibles por
+la marca `# JudoAdministracion`.
+
+Los dos aceptan `--simular` (`-Simular`), que dice lo que harían sin cambiar nada. En
+`preparar-puesto` la simulación **sí ejecuta las comprobaciones**, porque no modifican nada: es la
+forma de diagnosticar un puesto ya montado sin tocarle un pelo.
+
+> Las versiones de macOS y Linux están probadas. Las de Windows siguen la misma lógica pero **no se
+> han podido probar en un Windows real**: la primera vez, `-Simular`.
+
+### La otra vía: desde la propia aplicación
+
+Lo mismo, sin tocar una terminal, y sirve cuando no se tiene el USB delante: en la pantalla de inicio
+de sesión, la rueda dentada de arriba a la derecha → **Red de la competición**.
+
+Esa pantalla está antes del *login* a propósito, y es la única que puede estarlo: si la red está mal
+no se puede iniciar sesión, así que es el único momento en que sirve de algo. Es **intercambiable con
+los guiones** —comparten el archivo donde guardan la configuración anterior y la marca de las líneas
+del archivo *hosts*, así que se puede configurar por una vía y deshacer por la otra— y trae tres
+cosas que merece la pena conocer:
 
 - **Diagnostica al entrar, sin pedir permisos.** Enseña en qué punto de la cadena está el problema:
   si este equipo tiene la IP que le toca, si llega al servidor, si el nombre resuelve, si el puerto
@@ -624,7 +755,8 @@ el servidor no es lo mismo:
 
 En el servidor, la sección 2 pasa a ser **«Generar certificado»**: emite los tres archivos de §3.4
 sin salir de la aplicación y sin pedir permisos de administrador —emitir no los necesita; instalarlo
-después, sí—. Al terminar enseña la contraseña del `.pfx`, que hay que copiar al
+después, sí—. Es la vía para reemitir un certificado en un servidor ya montado; en uno nuevo esto ya
+lo ha hecho `preparar-servidor`. Al terminar enseña la contraseña del `.pfx`, que hay que copiar al
 `appsettings.Local.json` del servicio (`Servidor:CertificadoPassword`) y **no se puede volver a
 averiguar**, y la ruta del `.crt`, que es el único de los tres que se reparte a los puestos.
 
@@ -634,54 +766,6 @@ botón de **deshacer**, que devuelve el equipo a como estaba.
 
 > La rueda dentada tiene ahora dos entradas y con condiciones distintas: **Red** aparece en todos los
 > equipos, y **Datos básicos** solo en el servidor, porque va directa a la base de datos.
-
-### La otra vía rápida: los guiones
-
-Sirven para lo mismo y son intercambiables con la pantalla —comparten el archivo donde guardan la
-configuración anterior y la marca de las líneas del archivo *hosts*, así que se puede configurar por
-una vía y deshacer por la otra—. Hacen falta cuando la aplicación todavía no está instalada, o para
-equipos que no la llevan (marcadores, pantallas):
-
-```bash
-# macOS y Linux
-sudo Empaquetado/red/configurar-red.sh                                   # IP fija + hosts
-sudo Empaquetado/puesto/preparar-puesto.sh --certificado judo-server.crt  # certificado + pruebas
-```
-
-```powershell
-# Windows, en PowerShell como administrador. -ExecutionPolicy Bypass es imprescindible: sin él,
-# «la ejecución de scripts está deshabilitada en este sistema». Vale sólo para esa ejecución.
-powershell -ExecutionPolicy Bypass -File .\Empaquetado\red\configurar-red.ps1
-powershell -ExecutionPolicy Bypass -File .\Empaquetado\puesto\preparar-puesto.ps1 -Certificado judo-server.crt
-```
-
-`configurar-red` enseña las interfaces de red del equipo para elegir cuál se toca, propone la IP
-libre que le corresponde al rol —del `.5` al `.9` si es un puesto— y avisa si esa dirección ya
-responde. `preparar-puesto` instala el certificado, comprueba **antes** que sirve para el nombre
-`judo-server` y no está caducado, y termina probando la cadena entera: llego al servidor, resuelve el
-nombre, el puerto está abierto, y el HTTPS es de confianza. Cada comprobación que falla dice en qué
-capa está el problema.
-
-**Y los dos se deshacen**, que es lo que importa cuando el portátil es de alguien y esa tarde se lo
-lleva a su casa:
-
-```bash
-sudo Empaquetado/puesto/preparar-puesto.sh --deshacer      # quita el certificado y la configuración
-sudo Empaquetado/red/configurar-red.sh --deshacer          # devuelve la red a como estaba
-```
-
-El guion de red guarda la configuración anterior antes de tocar nada (en
-`/etc/judo-red-anterior.conf`, o `C:\ProgramData\JudoAdministracion\red-anterior.json`), así que el
-`--deshacer` no deja el equipo «en automático» a lo bruto: si tenía su propia IP fija y sus propios
-DNS, se los devuelve tal cual. Y de `/etc/hosts` quita solo las líneas que puso él, reconocibles por
-la marca `# JudoAdministracion`.
-
-Los dos aceptan `--simular` (`-Simular`), que dice lo que harían sin cambiar nada. En
-`preparar-puesto` la simulación **sí ejecuta las comprobaciones**, porque no modifican nada: es la
-forma de diagnosticar un puesto ya montado sin tocarle un pelo.
-
-> Las versiones de macOS y Linux están probadas. Las de Windows siguen la misma lógica pero **no se
-> han podido probar en un Windows real**: la primera vez, `-Simular`.
 
 El resto de la sección explica lo que hacen esos guiones, que es lo que se necesita cuando algo falla
 o cuando hay que hacerlo a mano.
@@ -715,6 +799,9 @@ Con `apt` y no con `dpkg -i`, para que resuelva las dependencias. Queda en
 `chmod +x` y ejecutarlo.
 
 ### 4.2 Instalar el certificado del servidor
+
+> **Lo hace el guion** (paso 2), y antes comprueba que el certificado sirve para el nombre
+> `judo-server` y que no está caducado.
 
 Sin este paso la aplicación **no conecta**: rechaza el certificado del servidor por no conocer quién
 lo emitió. Copiar `judo-server.crt` (solo el `.crt`, nunca el `.pfx`) al puesto y:
@@ -758,6 +845,9 @@ Invoke-RestMethod https://judo-server:8443/api/estado
 
 ### 4.3 El archivo *hosts*
 
+> **Lo hacen los dos guiones** (`configurar-red` y `preparar-puesto`, paso 3). Los dos marcan la
+> línea con `# JudoAdministracion`, así que da igual cuál la ponga y cuál la quite.
+
 La aplicación busca el servidor por **nombre**, no por IP, para que el plan de contingencia de la doc
 02 (§7) funcione sin tocar los cinco puestos. Añadir la línea:
 
@@ -768,10 +858,9 @@ La aplicación busca el servidor por **nombre**, no por IP, para que el plan de 
 192.168.2.3    judo-server
 ```
 
-### 4.4 Configuración de la aplicación: normalmente, ninguna
+### 4.4 Configuración de la aplicación
 
-Aquí hay una buena noticia: **un puesto no necesita archivo de configuración**. El `appsettings.json`
-que viene en el paquete ya apunta a donde debe:
+**La escribe `preparar-puesto`** (paso 4), y se reduce a dos líneas:
 
 ```json
 {
@@ -781,12 +870,11 @@ que viene en el paquete ya apunta a donde debe:
 ```
 
 Es exactamente lo que necesita un puesto de la red: el nombre del servidor y **ninguna** credencial
-de base de datos. Con el certificado instalado (§4.2) y la línea de *hosts* (§4.3), la aplicación
-funciona tal cual.
+de base de datos. Todo va por la API.
 
-Solo hay que crear `appsettings.Local.json` junto al ejecutable si ese equipo se sale de lo normal:
-otro puerto, otro nombre de servidor, o que sea el anfitrión (§5). Las rutas donde debe quedar el
-archivo:
+El archivo se escribe **siempre**, aunque coincida con el `appsettings.json` que ya trae el paquete.
+Cuesta un archivo y a cambio el estado del puesto es explícito: se puede leer qué tiene configurado
+sin deducirlo de la ausencia de nada, y `--deshacer` sabe qué quitar. Las rutas donde queda:
 
 | Sistema | Carpeta |
 |---|---|
@@ -797,11 +885,13 @@ archivo:
 Las tres exigen permisos de administrador para escribir en ellas, lo cual es conveniente: la
 configuración de un puesto no debe poder cambiarla quien lo esté usando.
 
+Si el guion se encuentra un `appsettings.Local.json` que **no** escribió él, no lo toca y avisa: es
+la señal de que ese equipo se configuró a mano y borrarlo sería tirar la decisión de alguien.
+
 > Existen también las variables de entorno `JUDO_API_URL` y `JUDO_DB_CONNECTION`, pero **solo se
-> aplican si el JSON no define ese valor** (ver `ConfiguracionApp.Cargar()`). Como el
-> `appsettings.json` del paquete sí define `ApiBaseUrl`, en la práctica la vía para cambiarlo es el
-> archivo. Conviene saberlo para no perder el tiempo exportando una variable que no va a tener
-> efecto.
+> aplican si el JSON no define ese valor** (ver `ConfiguracionApp.Cargar()`). Como el archivo sí
+> define `ApiBaseUrl`, en la práctica la vía para cambiarlo es el archivo. Conviene saberlo para no
+> perder el tiempo exportando una variable que no va a tener efecto.
 
 ---
 
@@ -813,57 +903,43 @@ aplicación: el **anfitrión**. Quien decide si una petición viene del anfitri�
 mirando por dónde ha entrado; no es un rol ni una marca que mande el cliente.
 
 Lo normal es que el anfitrión sea el propio servidor, con la aplicación de escritorio instalada
-además del servicio. En ese equipo, `appsettings.Local.json` sí es necesario:
+además del servicio. **Ese caso lo resuelve `preparar-servidor` solo** (paso 8): si encuentra la
+aplicación instalada en este equipo, le escribe su `appsettings.Local.json`:
 
 ```json
 {
     "ApiBaseUrl": "https://localhost:8443",
-    "ConnectionString": "Host=localhost;Port=5432;Database=JudoAdministracion;Username=judo_owner;Password=LA_DE_OWNER"
+    "ConnectionString": "Host=localhost;Port=5432;Database=JudoAdministracion;Username=judo_api;Password=…",
+    "RutaApi": "/opt/judoadministracion-api"
 }
 ```
 
-Dos cosas concretas:
+Tres cosas concretas:
 
-- **`localhost`, no `judo-server`.** Entrando por loopback, el servidor reconoce la conexión como
-  propia y habilita las operaciones reservadas. (Por eso el certificado de §3.4 incluye `localhost`
-  en su lista de nombres: sin él, esta URL daría error de certificado.)
-- **Aquí sí va la cadena de conexión.** Mientras quede alguna pantalla sin migrar a la API —la
-  transición está descrita en `03-Arquitectura-Cliente-Servidor.md`—, esas áreas siguen yendo
-  directas a PostgreSQL y solo funcionan en este equipo. En un puesto de la red darían el aviso
-  «Esta pantalla todavía no funciona en red».
+- **`localhost`, no `judo-server`.** Entrando por *loopback*, el servidor reconoce la conexión como
+  propia y habilita las operaciones reservadas. Por eso el certificado de §3.4 incluye `localhost` en
+  su lista de nombres: sin él, esta URL daría error de certificado.
+- **Aquí sí va la cadena de conexión**, y con el rol **`judo_api`**, el mismo con el que corre el
+  servicio. Mientras quede alguna pantalla sin migrar a la API, esas áreas siguen yendo directas a
+  PostgreSQL y solo funcionan en este equipo; en un puesto de la red dan el aviso «Esta pantalla
+  todavía no funciona en red». Ninguna de ellas toca el esquema —solo consultan, insertan y
+  actualizan—, así que no hay motivo para darle `judo_owner` a un programa de escritorio.
+- **`RutaApi`** le dice a la aplicación dónde está el servicio, para poder arrancarlo y pararlo desde
+  la propia pantalla de inicio de sesión sin abrir una terminal.
 
-Si el anfitrión tuviera que ser otro equipo distinto del servidor, se declara su dirección en
-`IpsAnfitrion` del `appsettings.Local.json` del **servicio**. Es una decisión deliberada y conviene
-que quede escrita ahí.
+Si la aplicación se instala **después** del servicio, basta con volver a lanzar `preparar-servidor`:
+recupera la contraseña de `judo_api` de la configuración que ya escribió y completa este paso.
 
----
+**Si el anfitrión tuviera que ser otro equipo** distinto del servidor, hay dos cosas que hacer, y
+ninguna es automática porque las dos son decisiones deliberadas:
 
-## 5.1 Si la base de datos ya existía: «must be owner of table»
+1. En el servidor, declarar la dirección de ese equipo en `IpsAnfitrion` dentro del
+   `appsettings.Local.json` del **servicio**.
+2. En ese equipo, `preparar-puesto --anfitrion`. Escribirá `ApiBaseUrl` apuntando a `localhost`, pero
+   **no** puede poner cadena de conexión: PostgreSQL no está ahí. Las pantallas sin migrar seguirán
+   sin funcionar en ese equipo.
 
-Reutilizar una base de datos que ya se venía usando —la del equipo de desarrollo, típicamente— tiene
-una trampa. El guion pone la **base** a nombre de `judo_owner`, pero las **tablas de dentro** siguen
-siendo de la cuenta que las creó. El primer arranque intenta ajustar el esquema y se cae con un error
-que no dice de dónde viene:
-
-```
-La API se ha cerrado nada más arrancar.
-
-MessageText: must be owner of table paises
-File: aclchk.c
-```
-
-Desde la versión actual **el guion lo detecta y lo arregla solo** en el paso 4, y avisa de ello:
-
-```
-✓ 47 objetos que eran de otra cuenta pasan a judo_owner (los datos no se tocan)
-```
-
-Sólo cambia quién consta como dueño; los datos se quedan donde estaban. Si hay que hacerlo a mano,
-lo importante es **no usar `REASSIGN OWNED`**: además de la base actual arrastra los objetos
-compartidos del clúster, así que con una cuenta personal que sea superusuario se llevaría por
-delante la propiedad de `postgres`, `template0` y `template1`. Hay que ir objeto a objeto, tablas y
-vistas primero —las secuencias de columnas `serial` cambian con su tabla y no se pueden cambiar
-sueltas— y después las rutinas.
+Por eso, mientras quede algo sin migrar, lo razonable es que el anfitrión sea el servidor.
 
 ---
 
@@ -976,4 +1052,32 @@ Que no estén en el mismo disco que la base de datos, ni en el mismo equipo.
 | «Esta pantalla todavía no funciona en red» | Área sin migrar, abierta desde un puesto en vez del anfitrión | §5 |
 | La aplicación arranca pero se cierra al abrir un informe | Publicado sin `-r <RID>`: faltan las bibliotecas nativas | doc 00, §4.2 |
 | Los listados salen ordenados de forma extraña, con los acentos al final | Ordenación `C` en la base de datos | §3.2 |
-| Los cambios de un puesto no se ven en otro | Capa de aplicación, no instalación | `03-Arquitectura-Cliente-Servidor.md` |
+| Los cambios de un puesto no se ven en otro | Capa de aplicación, no instalación | [03-Arquitectura-Cliente-Servidor.md](03-Arquitectura-Cliente-Servidor.md) |
+| Al arrancar: `must be owner of table paises` | La base de datos venía de otra cuenta | §9.1 |
+
+### 9.1 Si la base de datos ya existía: «must be owner of table»
+
+Reutilizar una base de datos que ya se venía usando —la del equipo de desarrollo, típicamente— tiene
+una trampa. El guion pone la **base** a nombre de `judo_owner`, pero las **tablas de dentro** siguen
+siendo de la cuenta que las creó. El primer arranque intenta ajustar el esquema y se cae con un error
+que no dice de dónde viene:
+
+```
+La API se ha cerrado nada más arrancar.
+
+MessageText: must be owner of table paises
+File: aclchk.c
+```
+
+Desde la versión actual **el guion lo detecta y lo arregla solo** en el paso 4, y avisa de ello:
+
+```
+✓ 47 objetos que eran de otra cuenta pasan a judo_owner (los datos no se tocan)
+```
+
+Sólo cambia quién consta como dueño; los datos se quedan donde estaban. Si hay que hacerlo a mano,
+lo importante es **no usar `REASSIGN OWNED`**: además de la base actual arrastra los objetos
+compartidos del clúster, así que con una cuenta personal que sea superusuario se llevaría por
+delante la propiedad de `postgres`, `template0` y `template1`. Hay que ir objeto a objeto, tablas y
+vistas primero —las secuencias de columnas `serial` cambian con su tabla y no se pueden cambiar
+sueltas— y después las rutinas.

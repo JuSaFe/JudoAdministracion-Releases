@@ -8,18 +8,22 @@
     queda después y no trae el instalador, porque depende de la red y del servidor concretos:
 
       · instalar el certificado del servidor como raíz de confianza — sin esto la aplicación no conecta
-      · asegurar la línea del archivo hosts que resuelve "judo-server"
-      · la configuración de la aplicación, solo si este equipo se sale de lo normal
+      · la línea del archivo hosts que resuelve "judo-server"
+      · la configuración de la aplicación: a dónde conecta y que aquí NO se habla con PostgreSQL
       · comprobar de punta a punta que el puesto llega al servidor
 
-    La IP fija del puesto NO la pone este guion: eso es Empaquetado\red\configurar-red.ps1, que
-    además guarda la configuración anterior para poder devolverla.
+    Sin parámetros: busca el certificado del servidor (judo-server.crt) a su lado, en la carpeta
+    desde la que se lanza y en el perfil del usuario. Lo normal es traer en un USB la carpeta
+    judo-puestos que deja preparar-servidor —certificado y guiones juntos— y ejecutarlo desde ahí.
+
+    La IP fija del puesto NO la pone este guion: eso es configurar-red.ps1, que viene en la misma
+    carpeta y además guarda la configuración anterior para poder devolverla.
 
     ATENCIÓN: este guion NO se ha podido probar en un Windows real. La lógica es la misma que la de
     preparar-puesto.sh, que sí está probado. La primera vez, ejecútalo con -Simular.
 
 .EXAMPLE
-    .\preparar-puesto.ps1 -Certificado judo-server.crt
+    powershell -ExecutionPolicy Bypass -File .\preparar-puesto.ps1
 
 .EXAMPLE
     .\preparar-puesto.ps1 -Deshacer
@@ -42,7 +46,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $MARCA        = "# JudoAdministracion"
-$MARCA_CONFIG = "Generado por Empaquetado/puesto/preparar-puesto"
+$MARCA_CONFIG = "Generado por preparar-puesto"
 $HOSTS        = "$env:SystemRoot\System32\drivers\etc\hosts"
 $config       = Join-Path $Dir "appsettings.Local.json"
 
@@ -162,7 +166,7 @@ if ($Deshacer) {
     Write-Host "   La aplicacion sigue instalada; se desinstala desde Programas y caracteristicas."
     Write-Host ""
     Write-Host "   Falta devolver la red, que es lo que le importa a quien use este equipo:" -ForegroundColor Yellow
-    Write-Host "     ..\red\configurar-red.ps1 -Deshacer"
+    Write-Host "     .\configurar-red.ps1 -Deshacer"
     Write-Host ""
     exit 0
 }
@@ -182,16 +186,21 @@ if ($Simular)   { Aviso "modo simulacion: no se cambia nada" }
 Paso "1/5  Comprobaciones previas"
 
 if (-not $Certificado) {
-    # Lo normal es traerlo en un USB y ejecutar el guion desde esa carpeta.
-    foreach ($c in @(".\$NombreServidor.crt", ".\judo-server.crt")) {
+    # Por orden de lo mas probable: la carpeta desde la que se lanza (el USB), la del propio guion,
+    # y el perfil del usuario -donde preparar-servidor deja la carpeta judo-puestos-.
+    foreach ($c in @(".\$NombreServidor.crt",
+                     ".\judo-server.crt",
+                     (Join-Path $PSScriptRoot "$NombreServidor.crt"),
+                     (Join-Path $env:USERPROFILE "judo-puestos\$NombreServidor.crt"),
+                     (Join-Path $env:USERPROFILE "$NombreServidor.crt"))) {
         if (Test-Path $c) { $Certificado = $c; break }
     }
 }
 
 if (-not ($Certificado -and (Test-Path $Certificado))) {
     Fallo "No encuentro el certificado del servidor.
-        Copialo desde el servidor ($NombreServidor.crt, NO el .pfx) e indicalo con
-        -Certificado <ruta>. Se genera en la guia 01, 3.4."
+        Copialo a esta carpeta ($NombreServidor.crt, NO el .pfx) o indicalo con -Certificado <ruta>.
+        El servidor lo deja en la carpeta judo-puestos del perfil de quien lanzo preparar-servidor."
 }
 
 try {
@@ -258,16 +267,12 @@ else                { PonerHosts }
 
 Paso "4/5  Configuracion de la aplicacion"
 
-# Un puesto normal NO necesita archivo de configuracion: el appsettings.json que trae el paquete ya
-# apunta a https://judo-server:8443 y sin credenciales de base de datos, que es exactamente lo que
-# tiene que ser. Solo se escribe cuando este equipo se sale de eso.
+# Se escribe SIEMPRE, aunque coincida con lo que ya trae el paquete. Cuesta un archivo y a cambio el
+# estado del puesto es explicito: se puede leer que tiene configurado sin deducirlo, y -Deshacer sabe
+# que quitar. Lo que no lleva nunca es cadena de conexion: un puesto de la red no habla con PostgreSQL.
 $urlApi = if ($Anfitrion) { "https://localhost:$Puerto" } else { "https://${NombreServidor}:$Puerto" }
-$haceFalta = $Anfitrion -or ($NombreServidor -ne "judo-server") -or ($Puerto -ne 8443)
 
-if (-not $haceFalta) {
-    Igual "no hace falta: el paquete ya viene apuntando a $urlApi"
-}
-elseif (-not $appInstalada) {
+if (-not $appInstalada) {
     Aviso "haria falta escribir appsettings.Local.json con ApiBaseUrl=$urlApi,"
     Aviso "pero la aplicacion no esta instalada. Vuelve a ejecutar el guion despues."
 }
@@ -284,7 +289,7 @@ else {
     "//": [
         "$MARCA_CONFIG.ps1",
         "ApiBaseUrl: donde escucha el servidor de la competicion.",
-        "ConnectionString vacia: un puesto de la red NO habla con PostgreSQL.",
+        "ConnectionString vacia: un puesto de la red NO habla con PostgreSQL, todo va por la API.",
         "Ver Documentacion/01-Guia-de-Instalacion.md, 4.4."
     ],
     "ApiBaseUrl": "$urlApi",
@@ -294,8 +299,8 @@ else {
     [IO.File]::WriteAllText($config, $contenido, (New-Object Text.UTF8Encoding($false)))
     Bien "escrita con ApiBaseUrl=$urlApi"
     if ($Anfitrion) {
-        Aviso "el anfitrion necesita ademas ConnectionString mientras queden pantallas sin migrar;"
-        Aviso "ponla a mano (guia 01, 5)"
+        Aviso "este equipo es anfitrion pero NO es el servidor: las pantallas que aun no han pasado"
+        Aviso "por la API necesitan cadena de conexion, y desde aqui no hay ninguna que poner (guia 01, 5)"
     }
 }
 
@@ -361,5 +366,5 @@ if ($listo) {
 Write-Host ""
 Write-Host "   Al acabar la competicion, este puesto se limpia con:"
 Write-Host "     .\preparar-puesto.ps1 -Deshacer"
-Write-Host "     ..\red\configurar-red.ps1 -Deshacer"
+Write-Host "     .\configurar-red.ps1 -Deshacer"
 Write-Host ""
