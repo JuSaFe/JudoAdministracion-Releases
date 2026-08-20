@@ -77,40 +77,9 @@ Descarga el paquete de tu sistema desde la [**última versión**](../../releases
 Los paquetes son **autocontenidos**: no hace falta instalar .NET en ningún equipo. Sí hace falta
 PostgreSQL 18, pero sólo en el servidor.
 
-Son **dos órdenes, sin parámetros**. Los guiones vienen dentro del propio paquete del servicio: no
-hay que descargar nada más.
-
-**1. En el servidor**, con el paquete descomprimido en `/opt/judoadministracion-api` (o
-`C:\Program Files\JudoAdministracionServidor`):
-
-```bash
-sudo ./preparar-servidor.sh
-```
-
-Instala PostgreSQL si falta, crea la base de datos y los roles, emite el certificado HTTPS, crea el
-esquema con sus datos básicos, configura el servicio y la aplicación de ese equipo, abre el puerto en
-el cortafuegos y deja la API arrancando sola al encender. Al terminar deja una carpeta
-**`judo-puestos/`** con el certificado y los guiones que hacen falta en el resto de equipos.
-
-**2. En cada puesto**, con la aplicación instalada y esa carpeta en un USB:
-
-```bash
-sudo ./configurar-red.sh          # dirección IP fija
-sudo ./preparar-puesto.sh         # certificado, nombre y comprobación de que llega al servidor
-```
-
-Los dos se deshacen con `--deshacer`, que devuelve el equipo a como estaba: importante cuando el
-portátil es prestado.
-
 Lo único que queda por hacer a mano es dar de alta los usuarios. El proceso completo, y qué hacer
 cuando algo falla, está en la
 **[Guía de instalación](Documentación/01-Guía-de-Instalación.md)**.
-
-> **Windows.** PowerShell no ejecuta guiones `.ps1` con la directiva que trae de fábrica («la
-> ejecución de scripts está deshabilitada en este sistema»). Se lanzan igual, desde PowerShell
-> abierto como administrador:
-> `powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1`.
-> Eso vale sólo para esa ejecución; no cambia la configuración del equipo.
 
 ## Documentación
 

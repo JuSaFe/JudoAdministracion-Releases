@@ -54,7 +54,7 @@ funciona.
 
 | Requisito | Versión | Notas |
 |---|---|---|
-| **PostgreSQL** | 18 recomendada | Es la que instalan los guiones. Funciona desde la **13** (ver §3.3); en la 14 y anteriores la separación de roles queda coja |
+| **PostgreSQL** | 18 recomendada | Lo instala el script |
 | **Módulos `contrib`** | La del servidor | Aportan `unaccent` y `pgcrypto`. En Windows y macOS vienen incluidos; en Linux es un paquete aparte |
 | **OpenSSL** | Cualquiera | Solo para generar el certificado (§3.4). Windows lo trae con Git para Windows |
 | **.NET Runtime** | — | **No hace falta** con los paquetes autocontenidos de la doc 00. Ver §2.3 |
