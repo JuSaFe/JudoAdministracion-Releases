@@ -266,7 +266,7 @@ if ($Deshacer) {
         if ($anterior.metodo -eq "manual") { Bien "IP anterior $($anterior.ip), puerta $($anterior.puerta)" }
     }
     else {
-        Aviso "no hay $Estado: no se como estaba este equipo"
+        Aviso "no hay ${Estado}: no se como estaba este equipo"
         Aviso "lo mejor que puedo hacer es dejar la interfaz en automatico (DHCP)"
         $adaptador = if ($Interfaz) { Get-NetAdapter -Name $Interfaz } else { ElegirInterfaz }
         $anterior = [ordered]@{

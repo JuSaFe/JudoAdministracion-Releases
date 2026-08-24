@@ -407,14 +407,41 @@ borrar_base_datos() {
     local rol
     for rol in judo_api judo_owner; do
         if [[ "$(psql_super -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname = '$rol';")" == "1" ]]; then
+            limpiar_dependencias_de_rol "$rol"
+
             if hacer_callado psql_super -d postgres -c "DROP ROLE IF EXISTS $rol;"; then
                 resultado "rol $rol borrado"
             else
-                aviso "no he podido borrar el rol $rol: aún es dueño de algo en otra base de datos"
+                # Un rol que se queda no estorba: no es dueño de nada, no tiene permisos y nadie se
+                # conecta con él. Se dice y se sigue, que es lo que toca en una desinstalación.
+                aviso "no he podido borrar el rol $rol; se queda, sin permisos y sin uso"
+                aviso "  para quitarlo a mano:  DROP ROLE $rol;"
             fi
         else
             igual "el rol $rol no existía"
         fi
+    done
+}
+
+# Quitar un rol de PostgreSQL no es solo DROP ROLE: mientras queden objetos suyos, o permisos
+# concedidos a él, en CUALQUIER base del clúster, PostgreSQL se niega. Y hace bien.
+#
+# La receta es la documentada, y en este orden, en cada base:
+#
+#   REASSIGN OWNED  no borra nada: pasa al superusuario lo que fuera del rol.
+#   DROP OWNED      después del anterior el rol ya no es dueño de nada, así que esto solo retira los
+#                   permisos que tuviera concedidos.
+#
+# Con REASSIGN antes que DROP OWNED, un DROP OWNED nunca llega a borrar datos de nadie.
+limpiar_dependencias_de_rol() {
+    local rol="$1" base
+
+    for base in $(psql_super -d postgres -tAc \
+        "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn;" 2>/dev/null)
+    do
+        hacer_callado psql_super -d "$base" -c \
+            "REASSIGN OWNED BY $rol TO \"$SUPERUSUARIO\";"
+        hacer_callado psql_super -d "$base" -c "DROP OWNED BY $rol;"
     done
 }
 

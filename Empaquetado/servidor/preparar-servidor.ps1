@@ -217,18 +217,77 @@ if ($Deshacer) {
             Select-Object -First 1 -ExpandProperty FullName
     }
 
+    # Las ordenes NATIVAS -psql.exe, pg_dump.exe, winget- hay que llamarlas SIEMPRE por aqui.
+    #
+    # El guion corre con $ErrorActionPreference = "Stop", y con ese ajuste todo lo que un programa
+    # externo escriba en la salida de error se convierte en un error TERMINANTE de PowerShell. psql
+    # escribe ahi hasta los avisos, asi que un "no se puede eliminar el rol judo_api porque otros
+    # objetos dependen de el" -que es informacion, no una averia- se llevaba el guion por delante y
+    # dejaba la desinstalacion hecha a medias, con la base ya borrada y el resto sin tocar.
+    #
+    # Es el equivalente del "set +e" de la version de macOS y Linux, y esta por el mismo motivo:
+    # instalar a medias es peor que no instalar, pero DESINSTALAR es lo contrario. Si un rol no se
+    # puede borrar, lo que hay que hacer es decirlo y seguir quitando el resto.
+    #
+    # Se acota a la llamada nativa y no se pone para todo el bloque a proposito: HacerD necesita que
+    # los errores de los cmdlets sigan siendo terminantes para poder cazarlos con try/catch.
+    function EjecutarNativoD {
+        param([scriptblock]$Orden)
+        $anterior = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & $Orden 2>&1 | Out-Null
+            return ($LASTEXITCODE -eq 0)
+        }
+        finally { $ErrorActionPreference = $anterior }
+    }
+
+    # Como EjecutarNativoD pero devolviendo lo que haya escrito, para las consultas.
+    function LeerNativoD {
+        param([scriptblock]$Orden)
+        $anterior = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $salida = & $Orden 2>$null
+            if ($LASTEXITCODE -ne 0) { return $null }
+            return ($salida | Out-String).Trim()
+        }
+        finally { $ErrorActionPreference = $anterior }
+    }
+
     # psql tolerante: devuelve la salida y NO aborta el guion si falla, al contrario que PsqlValor.
     function PsqlD ($consulta) {
         if (-not $psqlD) { return $null }
-        $v = & $psqlD -U $Superusuario -d postgres -tAc $consulta 2>$null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        return ($v | Out-String).Trim()
+        return (LeerNativoD { & $psqlD -U $Superusuario -d postgres -tAc $consulta })
     }
 
-    function EjecutarSqlD ($sql) {
+    function EjecutarSqlEnD ($base, $sql) {
         if ($Simular) { return $true }
-        & $psqlD -U $Superusuario -d postgres -v ON_ERROR_STOP=1 -c $sql *> $null
-        return ($LASTEXITCODE -eq 0)
+        return (EjecutarNativoD { & $psqlD -U $Superusuario -d $base -v ON_ERROR_STOP=1 -c $sql })
+    }
+
+    function EjecutarSqlD ($sql) { return (EjecutarSqlEnD "postgres" $sql) }
+
+    # Quitar un rol de PostgreSQL no es solo DROP ROLE: mientras queden objetos suyos, o permisos
+    # concedidos a el, en CUALQUIER base del cluster, PostgreSQL se niega. Y hace bien.
+    #
+    # La receta es la documentada, y en este orden, en cada base:
+    #
+    #   REASSIGN OWNED  no borra nada: pasa al superusuario lo que fuera del rol.
+    #   DROP OWNED      despues del anterior el rol ya no es dueno de nada, asi que esto solo
+    #                   retira los permisos que tuviera concedidos.
+    #
+    # Con REASSIGN antes que DROP OWNED, un DROP OWNED nunca llega a borrar datos de nadie.
+    function LimpiarDependenciasDeRol ($rol) {
+        $bases = PsqlD "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn;"
+        if (-not $bases) { return }
+
+        foreach ($linea in ($bases -split "`n")) {
+            $base = $linea.Trim()
+            if (-not $base) { continue }
+            EjecutarSqlEnD $base "REASSIGN OWNED BY $rol TO ""$Superusuario"";" | Out-Null
+            EjecutarSqlEnD $base "DROP OWNED BY $rol;" | Out-Null
+        }
     }
 
     # ── Cabecera ──────────────────────────────────────────────────────────────────────────────────
@@ -328,8 +387,7 @@ if ($Deshacer) {
             } elseif ($Simular) {
                 Write-Host "   [simulado] volcaria `"$Bd`" en $volcado" -ForegroundColor Yellow
             } else {
-                & $pgDumpD -U $Superusuario -Fc -f $volcado $Bd 2>$null
-                if ($LASTEXITCODE -eq 0) {
+                if (EjecutarNativoD { & $pgDumpD -U $Superusuario -Fc -f $volcado $Bd }) {
                     Bien "volcado en $volcado"
                     $script:VolcadoFinal = $volcado
                 } else {
@@ -352,10 +410,15 @@ if ($Deshacer) {
         # Los roles, despues de la base: mientras son duenos de algo, PostgreSQL no los deja caer.
         foreach ($rol in @("judo_api", "judo_owner")) {
             if ((PsqlD "SELECT 1 FROM pg_roles WHERE rolname = '$rol';") -eq "1") {
+                LimpiarDependenciasDeRol $rol
+
                 if (EjecutarSqlD "DROP ROLE IF EXISTS $rol;") {
                     ResultadoD "rol $rol borrado"
                 } else {
-                    Aviso "no he podido borrar el rol $rol: aun es dueno de algo en otra base de datos"
+                    # Un rol que se queda no estorba: no es dueno de nada, no tiene permisos y nadie
+                    # se conecta con el. Se dice y se sigue, que es lo que toca en una desinstalacion.
+                    Aviso "no he podido borrar el rol ${rol}; se queda, sin permisos y sin uso"
+                    Aviso "  para quitarlo a mano:  DROP ROLE $rol;"
                 }
             } else {
                 Igual "el rol $rol no existia"
@@ -386,13 +449,13 @@ if ($Deshacer) {
         else {
             # El identificador exacto que hay puesto, y no uno fijo: la version instalada puede no ser
             # la 18 que instala este mismo guion.
-            $id = (winget list --source winget 2>$null |
-                   Select-String 'PostgreSQL\.PostgreSQL\S*' |
+            $listado = LeerNativoD { winget list --source winget }
+            $id = ($listado | Select-String 'PostgreSQL\.PostgreSQL\S*' |
                    ForEach-Object { $_.Matches[0].Value } | Select-Object -First 1)
 
             if (-not $id) {
                 Aviso "PostgreSQL no lo puso winget: desinstalalo desde 'Aplicaciones instaladas'"
-            } elseif (HacerD { winget uninstall --id $id --silent --disable-interactivity }) {
+            } elseif ($Simular -or (EjecutarNativoD { winget uninstall --id $id --silent --disable-interactivity })) {
                 ResultadoD "PostgreSQL desinstalado ($id)"
             } else {
                 Aviso "no he podido desinstalar PostgreSQL ($id). Hazlo desde 'Aplicaciones instaladas'"
