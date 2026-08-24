@@ -119,7 +119,7 @@ diez pasos el guion:
 | 1 | Comprueba que el paquete está donde debe y si el servidor es nuevo o ya estaba montado | §3.5 |
 | 2 | Instala PostgreSQL si falta y comprueba que responde | §3.1 |
 | 3 | Crea la base de datos con la codificación y la ordenación correctas | §3.2 |
-| 4 | Crea `judo_owner` y `judo_api` con contraseñas al azar, las extensiones, y reasigna los objetos que fueran de otra cuenta | §3.3, §9.1 |
+| 4 | Crea `judo_owner` y `judo_api` con contraseñas al azar, las extensiones, y reasigna los objetos que fueran de otra cuenta | §3.3, §10.1 |
 | 5 | Emite el certificado con todos los nombres que hacen falta **y lo instala como raíz de confianza de este equipo** | §3.4 |
 | 6 | Escribe el `appsettings.Local.json` del servicio | §3.5 |
 | 7 | Arranca el servicio, crea el esquema, siembra los datos básicos y **hace el cambio de rol** | §3.6 |
@@ -985,6 +985,51 @@ Después, con la aplicación:
 
 ## 7. Actualizar a una versión nueva
 
+Lo hace la propia aplicación. El procedimiento a mano de §7.2 sigue aquí porque hace falta cuando no
+hay Internet o cuando la actualización falla, pero no es el camino normal.
+
+### 7.1 Desde la aplicación
+
+En la pantalla de inicio de sesión, **rueda dentada ▸ Actualización**. Está antes de la sesión a
+propósito, igual que la configuración de red: es donde hay que poder entrar cuando la aplicación
+*no* puede entrar.
+
+```
+1. Empezar por el SERVIDOR. Los puestos no podrán entrar hasta estar en su misma versión.
+2. Rueda dentada ▸ Actualización ▸ Comprobar si hay una versión nueva.
+3. Leer las novedades. Es donde se dice si esta versión trae algo que haya que saber.
+4. Escribir la contraseña de judo_owner (solo en el servidor).      ─────▶ 7.3
+5. Actualizar ahora. Pedirá permisos de administrador UNA vez.
+6. Apuntar lo que enseña al terminar: ruta del volcado y, si se generó, la contraseña nueva.
+7. Volver a abrir la aplicación (no se abre sola, a propósito).
+8. Repetir en cada puesto — allí solo hay aplicación, así que no pide contraseña ninguna.
+9. Verificación de §6.
+```
+
+Qué hace por dentro, en este orden, y todo con un único diálogo de permisos:
+
+1. **Copia de seguridad** de la base de datos con `pg_dump -Fc`, antes de tocar nada. Se guarda en
+   `/opt/judoadministracion-copias` (`C:\ProgramData\JudoAdministracion\Copias` en Windows) y se
+   conservan las cinco últimas.
+2. Descomprime la versión nueva **al lado**, sin tocar la que está funcionando.
+3. Lleva a la carpeta nueva el certificado y la configuración de este equipo. La configuración **no
+   se copia: se reescribe** con solo lo que es de este servidor, para que las claves nuevas de la
+   versión salgan del paquete y no queden tapadas por el archivo viejo (doc 03, §2.2).
+4. Para el servicio y cambia las dos carpetas de sitio. **Aquí empieza la parada.**
+5. Aplica los cambios de esquema con el binario nuevo.
+6. Arranca y comprueba que responde en su puerto. **Aquí termina la parada.**
+
+Y si algo falla en cualquier punto, **devuelve la carpeta anterior a su sitio y vuelve a arrancar por
+su cuenta**, sin depender de que la aplicación siga abierta. La base de datos NO se restaura sola: se
+dice dónde está el volcado y se restaura a mano si de verdad hace falta (§8), porque restaurar por un
+falso negativo haría más daño que el fallo que evita.
+
+La versión anterior del servicio se conserva como `judoadministracion-api.anterior`, con su
+`appsettings.Local.json` intacto dentro. Para volver atrás a mano: parar el servicio, cambiar las dos
+carpetas de nombre y arrancar.
+
+### 7.2 A mano (sin Internet, o si la actualización falla)
+
 ```
 1. Avisar y esperar a que nadie esté trabajando (una actualización corta las sesiones).
 2. Copia de seguridad de la base de datos  ─────────▶ §8
@@ -996,16 +1041,35 @@ Después, con la aplicación:
 7. Verificación de §6.
 ```
 
-Dos cosas que conviene tener claras:
+Los paquetes se descargan de la
+[última release](https://github.com/JuSaFe/JudoAdministracion-Releases/releases/latest), y conviene
+comprobarlos con el `SHA256SUMS.txt` que va al lado: `sha256sum -c SHA256SUMS.txt`.
+
+### 7.3 La contraseña de judo_owner
+
+Es la que aplica los cambios de esquema, y **solo se imprimió una vez**: al final de
+`preparar-servidor` (§3.3). No queda guardada en ningún archivo, a propósito.
+
+Si no la tienes, el diálogo de actualización trae un botón **«No la tengo»**: pone una contraseña
+nueva, la usa para esta actualización y la enseña al terminar para que la apuntes. No afecta al
+servicio en marcha ni cierra ninguna sesión — la API corre con `judo_api`, que es otro rol.
+
+En Windows ese botón pide además la contraseña del superusuario `postgres` (la que pidió el asistente
+al instalar PostgreSQL), porque ahí no hay forma de cambiar una contraseña sin conocer otra. En Linux
+y en macOS no pide nada.
+
+### 7.4 Tres cosas que conviene tener claras
 
 - **El servidor se actualiza primero.** Una aplicación nueva contra un servidor viejo puede pedir
-  endpoints que no existen.
-- **Los cambios de esquema sobre una base de datos que ya existe no son automáticos.** Los guiones de
-  `Scripts/Tablas` son `CREATE TABLE IF NOT EXISTS` y describen la forma final de cada tabla: crean
-  lo que falta, pero no añaden una columna a una tabla existente. Eso se aplica a mano, con
-  `judo_owner`, y es deliberado. Antes de actualizar hay que leer las notas de la versión.
+  endpoints que no existen. Ya no depende de que alguien se acuerde: el servidor **rechaza el inicio
+  de sesión** de cualquier puesto que no sea de su misma versión, y le dice cuál le falta. El
+  engranaje sigue funcionando en ese puesto, que es por donde se arregla.
+- **Los cambios de esquema no borran nada.** Los guiones de `Scripts/Tablas` son
+  `CREATE TABLE IF NOT EXISTS` y los `Funciones/00_alter_*` son `ADD COLUMN IF NOT EXISTS`: añaden lo
+  que falta y no tocan lo que hay. Antes de actualizar, leer las notas de la versión.
 - **Nunca se actualiza el día de la competición.** Con una semana de margen y una prueba real entre
-  medias.
+  medias. Si hay un evento activo o la API está dando servicio a la red, la aplicación avisa antes de
+  empezar.
 
 ---
 
@@ -1035,7 +1099,82 @@ Que no estén en el mismo disco que la base de datos, ni en el mismo equipo.
 
 ---
 
-## 9. Problemas frecuentes de la instalación
+## 9. Desinstalar
+
+La aplicación de escritorio se desinstala como cualquier otro programa. El **servicio** no: no es un
+programa instalado, sino una carpeta más un servicio del sistema, un certificado en el almacén de
+confianza, una línea en el `hosts`, unas reglas de cortafuegos y una base de datos. Todo eso lo pone
+`preparar-servidor`, y lo quita el mismo guion con `--deshacer`.
+
+### 9.1 El servidor
+
+```bash
+# Primero SIEMPRE en seco, para ver qué se va a llevar:
+sudo ./preparar-servidor.sh --deshacer --simular
+
+# Y cuando lo de arriba cuadre:
+sudo ./preparar-servidor.sh --deshacer
+```
+
+En Windows, desde PowerShell **como administrador**:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Deshacer -Simular
+powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Deshacer
+```
+
+> **`--deshacer` BORRA LA BASE DE DATOS.** Sin preguntar otra vez y sin vuelta atrás. Antes de
+> borrarla saca un volcado al home (`judo-volcado-antes-de-desinstalar-<fecha>.dump`), y **ése es lo
+> único que queda**: cópialo fuera del equipo antes de dar el equipo por limpio. Para conservar los
+> datos, `--sin-base-datos`.
+
+Lo que quita, en este orden — el orden importa, porque el volcado tiene que salir antes de borrar la
+base y la base antes de desinstalar PostgreSQL:
+
+| # | Qué |
+|---|---|
+| 1 | El servicio del sistema (launchd, systemd o la tarea programada) y lo que quede escuchando en el puerto |
+| 2 | Volcado y borrado de la base de datos y de los roles `judo_owner` y `judo_api` |
+| 3 | PostgreSQL — **con una salvaguarda**, ver abajo |
+| 4 | El certificado del almacén de confianza del equipo |
+| 5 | La línea de `judo-server` del `hosts` |
+| 6 | Las reglas de cortafuegos de la aplicación |
+| 7 | El `appsettings.Local.json` de la aplicación de escritorio, si lo escribió la instalación |
+| 8 | La carpeta del servicio, la de copias y la de la versión anterior |
+
+**PostgreSQL solo se desinstala si en el clúster no queda ninguna otra base de datos** que no sea la
+de esta aplicación. Un anfitrión puede ser un portátil que ya tenía PostgreSQL con otras cosas
+dentro, y desinstalarlo ahí se llevaría datos que no son de aquí. Si las hay, el guion las lista, lo
+dice y deja el gestor donde está.
+
+Si alguna cosa no se puede quitar, el guion **sigue con el resto** y lo dice al final. Desinstalar a
+medias y en silencio es lo único que no puede pasar: un servicio que sigue arrancando al encender el
+equipo y buscando una carpeta que ya no existe es más difícil de diagnosticar que no haber empezado.
+
+### 9.2 Un puesto
+
+```bash
+sudo ./preparar-puesto.sh --deshacer
+sudo ./configurar-red.sh --deshacer      # y después la red, que es lo que nota quien use el equipo
+```
+
+Eso quita el certificado y la configuración; la aplicación se desinstala aparte. El orden importa:
+`configurar-red --deshacer` es el que devuelve la IP y el DNS a como estaban, y es lo que hay que
+hacer sí o sí si el equipo se va a seguir usando para otra cosa.
+
+### 9.3 Lo que no se lleva ningún guion
+
+- **La aplicación de escritorio.** En Windows, desde «Aplicaciones instaladas»; en macOS,
+  arrastrando `JudoAdministracion.app` a la papelera; en Linux, borrando el AppImage.
+- **El `appsettings.Local.json` de un puesto que se tocó a mano.** Si no lo escribió el guion, el
+  guion no lo borra: puede llevar algo que alguien puso a propósito. Se dice y se deja.
+- **Los volcados y las credenciales** que la instalación dejó en el home
+  (`judo-credenciales-servidor.txt`, `judo-puestos/`). Llevan contraseñas: cópialos fuera y
+  bórralos a mano cuando ya no hagan falta.
+
+---
+
+## 10. Problemas frecuentes de la instalación
 
 | Síntoma | Causa probable | Comprobación |
 |---|---|---|
@@ -1053,9 +1192,9 @@ Que no estén en el mismo disco que la base de datos, ni en el mismo equipo.
 | La aplicación arranca pero se cierra al abrir un informe | Publicado sin `-r <RID>`: faltan las bibliotecas nativas | doc 00, §4.2 |
 | Los listados salen ordenados de forma extraña, con los acentos al final | Ordenación `C` en la base de datos | §3.2 |
 | Los cambios de un puesto no se ven en otro | Capa de aplicación, no instalación | [03-Arquitectura-Cliente-Servidor.md](03-Arquitectura-Cliente-Servidor.md) |
-| Al arrancar: `must be owner of table paises` | La base de datos venía de otra cuenta | §9.1 |
+| Al arrancar: `must be owner of table paises` | La base de datos venía de otra cuenta | §10.1 |
 
-### 9.1 Si la base de datos ya existía: «must be owner of table»
+### 10.1 Si la base de datos ya existía: «must be owner of table»
 
 Reutilizar una base de datos que ya se venía usando —la del equipo de desarrollo, típicamente— tiene
 una trampa. El guion pone la **base** a nombre de `judo_owner`, pero las **tablas de dentro** siguen

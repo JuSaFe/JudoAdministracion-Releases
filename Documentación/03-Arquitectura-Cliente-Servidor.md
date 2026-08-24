@@ -70,21 +70,86 @@ De ahí sale el baile de roles de la instalación, que no es una manía sino una
 
 Los dos valores van **juntos**: con `judo_api` y la inicialización activada, el arranque falla con
 permiso denegado, porque ese rol precisamente no puede tocar el esquema. `preparar-servidor` hace el
-cambio solo (guía 01, §3.6); en una actualización hay que repetirlo a mano (guía 01, §7).
+cambio solo (guía 01, §3.6), y en una actualización lo hace el actualizador (guía 01, §7.1).
+
+**`SoloMigrar`: aplicar el esquema y salir.** Es como el actualizador hace ese baile sin tocar la
+configuración del servicio. Lanza el binario nuevo UNA vez con las tres cosas por variable de
+entorno:
+
+```
+Servidor__ConnectionString=<la de judo_owner>
+Servidor__InicializarBaseDeDatos=true
+Servidor__SoloMigrar=true
+```
+
+Aplica el esquema, escribe la versión y **sale con un código** —0 si quedó aplicado— sin ponerse a
+servir; ni siquiera llega a atar el puerto, porque sale antes de `app.Run()`. Eso da dos cosas que la
+alternativa no daba:
+
+- El `appsettings.Local.json` del servicio **no se reescribe en ningún momento**, así que una
+  actualización interrumpida a mitad no puede dejarlo configurado con permisos de dueño, ni el baile
+  de roles a medio hacer.
+- La migración es un paso **suelto y comprobable**: su código de salida es lo que decide si el
+  actualizador sigue adelante o revierte a la versión anterior.
+
+`SoloMigrar` implica la inicialización aunque `InicializarBaseDeDatos` venga en `false`: pedirla sin
+inicialización no significaría nada, y dejarlo pasar saldría con un 0 —«migración correcta»— sin haber
+migrado, que es el peor resultado posible aquí.
 
 ### 2.2 Configuración
 
 Toda en la sección `Servidor` de `appsettings.Local.json`, junto al ejecutable (`OpcionesServidor`):
 
-| Clave | Para qué |
+La columna «Sobrevive» dice cuáles son **de este equipo**: son las que el actualizador traslada a la
+versión nueva. Lo demás sale del `appsettings.json` que trae el paquete.
+
+| Clave | Para qué | Sobrevive |
+|---|---|---|
+| `Url` | Dónde escucha. `https://0.0.0.0:8443` en competición | sí |
+| `CertificadoPfx` / `CertificadoPassword` | El certificado, si `Url` es HTTPS | sí |
+| `ConnectionString` | PostgreSQL. Siempre `localhost`, y con `judo_api` en competición | sí |
+| `ClaveFirmaTokens` | Firma de las sesiones. Mínimo 32 caracteres y **estable entre reinicios** | sí |
+| `HorasValidezToken` | 16 por defecto: una jornada larga sin volver a pedir la contraseña | sí |
+| `IpsAnfitrion` | Direcciones que cuentan como anfitrión además de la propia máquina (§3.3) | sí |
+| `InicializarBaseDeDatos` | §2.1 | sí |
+| `SoloMigrar` | §2.1. Solo por variable de entorno, nunca en el archivo | no |
+
+**El archivo local se reescribe en cada actualización, no se copia.** Arrastrarlo tal cual tenía un
+defecto que no se veía hasta dos versiones después: cualquier clave que cambiara de valor por defecto
+quedaba tapada para siempre por la copia vieja. Como los proveedores se superponen
+—`appsettings.json` del paquete nuevo → `appsettings.Local.json` → variables de entorno—, dejando en
+el archivo local **solo** lo de la tabla de arriba, todo lo demás sigue los valores de la versión
+nueva. La lista vive en `ClavesDeEsteEquipo`, en `Services/Actualizacion/ActualizadorApi.cs`.
+
+> **Al añadir aquí una clave que sea de cada equipo, hay que añadirla también a
+> `ClavesDeEsteEquipo`.** Una que se olvide se pierde en la siguiente actualización, y algunas no se
+> pueden recomponer: la contraseña del `.pfx` no se puede deducir y la de `judo_api` no está escrita
+> en ningún otro sitio.
+
+La aplicación de escritorio superpone sus dos archivos igual, por el mismo motivo
+(`ConfiguracionApp.Cargar`).
+
+### 2.2.1 Versión del cliente
+
+`ClienteApi` se presenta en cada petición con dos cabeceras:
+
+| Cabecera | Valor |
 |---|---|
-| `Url` | Dónde escucha. `https://0.0.0.0:8443` en competición |
-| `CertificadoPfx` / `CertificadoPassword` | El certificado, si `Url` es HTTPS |
-| `ConnectionString` | PostgreSQL. Siempre `localhost`, y con `judo_api` en competición |
-| `ClaveFirmaTokens` | Firma de las sesiones. Mínimo 32 caracteres y **estable entre reinicios** |
-| `HorasValidezToken` | 16 por defecto: una jornada larga sin volver a pedir la contraseña |
-| `IpsAnfitrion` | Direcciones que cuentan como anfitrión además de la propia máquina (§3.3) |
-| `InicializarBaseDeDatos` | §2.1 |
+| `X-Judo-Cliente` | `administracion` |
+| `X-Judo-Version` | la del ensamblado, o sea `<Version>` de `Directory.Build.props` |
+
+`/api/auth/login` rechaza con **412** al cliente que se declare `administracion` y no traiga
+exactamente la versión del servidor, devolviendo las dos en el cuerpo. Solo se bloquea el login: el
+engranaje del puesto sigue funcionando, y es por donde se actualiza (guía 01, §7.1).
+
+**JudoCrono queda fuera de esa comprobación a propósito.** El marcador y las pantallas entran por
+este mismo endpoint, se versionan aparte, y la API no distingue entre aplicaciones: por eso la
+comprobación se aplica solo a quien se identifica, y una petición sin esas cabeceras pasa como
+siempre. Sin ese matiz, la siguiente release dejaría a JudoCrono sin poder entrar.
+
+Que el cliente se identifique a sí mismo no abre nada: lo único que se consigue omitiendo las
+cabeceras es saltarse una comprobación de compatibilidad, que está para evitar un accidente y no para
+impedir un acceso. La contraseña y los permisos de cada operación se comprueban igual.
 
 Las **variables de entorno mandan sobre el archivo**, y no al revés. Es deliberado: `Program.cs`
 vuelve a registrar el proveedor de entorno *después* de `appsettings.Local.json`, y eso es lo que

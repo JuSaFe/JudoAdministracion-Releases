@@ -35,6 +35,25 @@
     Windows real. La lógica es la misma y los comandos son los estándar del sistema, pero la primera
     ejecución conviene hacerla con calma, leyendo lo que dice cada paso.
 
+    DESINSTALAR (-Deshacer)
+
+        powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Deshacer -Simular
+        powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Deshacer
+
+    -Deshacer BORRA LA BASE DE DATOS. Quita de este equipo, por este orden: la tarea programada, la
+    base de datos y sus roles, PostgreSQL, el certificado de los almacenes del equipo, la línea del
+    hosts, las reglas del cortafuegos y la carpeta del servicio con sus copias. Antes de borrar la
+    base de datos saca un volcado al perfil del usuario, que es lo único que queda al terminar.
+
+    Pruébalo SIEMPRE primero con -Simular, que enseña lo que haría sin tocar nada. Con
+    -SinBaseDatos se conservan la base de datos, los roles y PostgreSQL.
+
+    PostgreSQL solo se desinstala si en el clúster NO hay más bases de datos que las de esta
+    aplicación: en un equipo que ya lo tenía puesto de antes, desinstalarlo se llevaría datos que no
+    son de aquí. Si las hay, se dice y se deja el gestor donde está.
+
+    La aplicación de escritorio no la toca: ésa se desinstala desde «Aplicaciones instaladas».
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1
 
@@ -68,6 +87,11 @@ param(
     [switch]   $RegenerarCertificado,
     [switch]   $ForzarConfiguracion,
     [switch]   $Si,
+
+    # Desinstalar. Ver el bloque DESHACER, mas abajo: -Deshacer BORRA LA BASE DE DATOS.
+    [switch]   $Deshacer,
+    [switch]   $Simular,
+    [switch]   $SinBaseDatos,
 
     # Nombres de la versión anterior, cuando había que pedir cada cosa. Ahora son el comportamiento
     # por defecto; se aceptan para no romper notas ni guiones de nadie.
@@ -145,6 +169,351 @@ $marcaHosts   = "# JudoAdministracion"
 $subred       = ($Ip -replace '\.\d+$', '.0') + "/24"
 $credenciales = Join-Path $env:USERPROFILE "judo-credenciales-servidor.txt"
 $paraPuestos  = Join-Path $env:USERPROFILE "judo-puestos"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  DESHACER
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#
+# Quita de este equipo todo lo que puso la instalacion, en el orden inverso al que lo puso. El orden
+# no es cosmetico: el volcado de la base de datos tiene que salir ANTES de borrarla, y borrarla antes
+# de desinstalar PostgreSQL, porque despues ya no habria con que hacer ninguna de las dos cosas.
+#
+# Esto BORRA LA BASE DE DATOS sin volver a preguntar. Es deliberado: -Deshacer es lo que se ejecuta
+# al retirar un servidor o al devolver un equipo prestado, y dejar la base de datos ahi "por si
+# acaso" convertia la desinstalacion en algo que nunca terminaba de estar hecho. El volcado del paso
+# 2 es la red de seguridad, y -Simular es la forma de ver que va a pasar antes de que pase.
+#
+# Es un bloque autocontenido: no usa PsqlSuper ni BuscarPsql, que se definen mas abajo y ademas
+# abortan al primer fallo. Un desinstalador que aborta a mitad deja el equipo peor que como estaba,
+# con una tarea programada apuntando a una carpeta que ya no existe.
+
+if ($Deshacer) {
+
+    $script:VolcadoFinal = $null
+
+    # ── Utilidades propias del bloque ─────────────────────────────────────────────────────────────
+
+    # En simulacion no ejecuta nada y no imprime nada: la linea que se lee la pone ResultadoD, que es
+    # la que sabe explicar que se ha hecho.
+    function HacerD {
+        param([scriptblock]$Orden)
+        if ($Simular) { return $true }
+        try { & $Orden | Out-Null; return $true } catch { return $false }
+    }
+
+    # "[ok] hecho" cuando se ha hecho, "[simulado] hecho" cuando solo se ha simulado. Un [ok] en modo
+    # simulacion es una mentira, y es justo el modo en el que hay que poder confiar en lo que se lee.
+    function ResultadoD ($t) {
+        if ($Simular) { Write-Host "   [simulado] $t" -ForegroundColor Yellow }
+        else          { Bien $t }
+    }
+
+    # Los mismos sitios que mira BuscarPsql, que esta definida mas abajo en el guion.
+    function BuscarHerramientaD ($nombre) {
+        $enPath = Get-Command $nombre -ErrorAction SilentlyContinue
+        if ($enPath) { return $enPath.Source }
+        Get-ChildItem "C:\Program Files\PostgreSQL\*\bin\$nombre" -ErrorAction SilentlyContinue |
+            Sort-Object { [int]($_.Directory.Parent.Name) } -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+
+    # psql tolerante: devuelve la salida y NO aborta el guion si falla, al contrario que PsqlValor.
+    function PsqlD ($consulta) {
+        if (-not $psqlD) { return $null }
+        $v = & $psqlD -U $Superusuario -d postgres -tAc $consulta 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return ($v | Out-String).Trim()
+    }
+
+    function EjecutarSqlD ($sql) {
+        if ($Simular) { return $true }
+        & $psqlD -U $Superusuario -d postgres -v ON_ERROR_STOP=1 -c $sql *> $null
+        return ($LASTEXITCODE -eq 0)
+    }
+
+    # ── Cabecera ──────────────────────────────────────────────────────────────────────────────────
+
+    Write-Host ""
+    Write-Host "Desinstalar el servidor de JudoAdministracion de este equipo" -ForegroundColor Cyan
+    Write-Host "   base       $Bd"
+    Write-Host "   carpeta    $Dir"
+    Write-Host "   servidor   $Nombre, puerto $Puerto"
+    Write-Host ""
+    if ($SinBaseDatos) {
+        Aviso "se conservan la base de datos, los roles y PostgreSQL (-SinBaseDatos)"
+    } else {
+        Write-Host "   Se va a BORRAR la base de datos `"$Bd`", sus roles y PostgreSQL." -ForegroundColor Red
+        Write-Host "   Antes se saca un volcado al perfil, y es lo unico que quedara." -ForegroundColor Red
+    }
+    if ($Simular) { Aviso "modo simulacion: no se cambia nada" }
+    Write-Host ""
+
+    if (-not $Si) {
+        $r = Read-Host "   Sigo? [s/N]"
+        if ($r -notmatch '^[sSyY]$') { Write-Host "   Cancelado."; exit 0 }
+    }
+
+    # Fuera de la carpeta que se va a borrar, por si el guion se esta ejecutando desde dentro (es lo
+    # normal: viene dentro del paquete del servicio).
+    Set-Location "$env:SystemDrive\"
+
+    # ── 1. La tarea programada ────────────────────────────────────────────────────────────────────
+
+    Paso "1/8  El servicio"
+
+    if (Get-ScheduledTask -TaskName "JudoAdministracionApi" -ErrorAction SilentlyContinue) {
+        HacerD { Stop-ScheduledTask -TaskName "JudoAdministracionApi" -ErrorAction SilentlyContinue } | Out-Null
+        if (HacerD { Unregister-ScheduledTask -TaskName "JudoAdministracionApi" -Confirm:$false }) {
+            ResultadoD "tarea JudoAdministracionApi quitada"
+        } else {
+            Aviso "no he podido quitar la tarea JudoAdministracionApi"
+        }
+    } else {
+        Igual "no habia tarea JudoAdministracionApi"
+    }
+
+    # Lo que quede escuchando aunque no fuera la tarea: la API se puede haber lanzado desde el boton
+    # de la aplicacion de escritorio, y entonces es un proceso suelto.
+    $escuchando = @(Get-NetTCPConnection -LocalPort $Puerto -State Listen -ErrorAction SilentlyContinue |
+                    Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($escuchando.Count -gt 0) {
+        # $pid NO se puede usar como variable de bucle: es una variable automatica de PowerShell
+        # -el identificador de este proceso- y es de solo lectura.
+        foreach ($proceso in $escuchando) {
+            HacerD { Stop-Process -Id $proceso -Force -ErrorAction SilentlyContinue } | Out-Null
+        }
+        ResultadoD "parado lo que quedaba escuchando en el puerto $Puerto"
+    }
+
+    # ── 2 y 3. Base de datos y PostgreSQL ─────────────────────────────────────────────────────────
+
+    $psqlD = BuscarHerramientaD "psql.exe"
+
+    if ($SinBaseDatos) {
+        Paso "2/8  Base de datos"
+        Igual "se conserva (-SinBaseDatos)"
+        Paso "3/8  PostgreSQL"
+        Igual "se conserva (-SinBaseDatos)"
+    }
+    elseif (-not $psqlD) {
+        Paso "2/8  Base de datos"
+        Aviso "no encuentro psql.exe, asi que no puedo volcarla ni borrarla."
+        Aviso "  Si PostgreSQL sigue instalado, la base `"$Bd`" seguira ahi."
+        Paso "3/8  PostgreSQL"
+        Igual "no encuentro psql.exe: no lo toco"
+    }
+    else {
+        # La contrasena del superusuario hace falta para todo esto y en Windows no hay camino sin
+        # ella. Se pide aqui y no al principio para no molestar cuando -SinBaseDatos.
+        if (-not $ClavePostgres) {
+            $segura = Read-Host "   Contrasena del superusuario '$Superusuario' de PostgreSQL" -AsSecureString
+            $ClavePostgres = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura))
+        }
+        $env:PGPASSWORD = $ClavePostgres
+
+        Paso "2/8  Volcado y borrado de la base de datos"
+
+        $existeBd = (PsqlD "SELECT 1 FROM pg_database WHERE datname = '$Bd';") -eq "1"
+
+        if (-not $existeBd) {
+            Igual "la base de datos `"$Bd`" no existe: no hay nada que volcar"
+        } else {
+            $pgDumpD = BuscarHerramientaD "pg_dump.exe"
+            $sello   = Get-Date -Format "yyyyMMdd-HHmmss"
+            $volcado = Join-Path $env:USERPROFILE "judo-volcado-antes-de-desinstalar-$sello.dump"
+
+            if (-not $pgDumpD) {
+                Aviso "no encuentro pg_dump.exe: NO hay volcado, y la base se va a borrar igual"
+            } elseif ($Simular) {
+                Write-Host "   [simulado] volcaria `"$Bd`" en $volcado" -ForegroundColor Yellow
+            } else {
+                & $pgDumpD -U $Superusuario -Fc -f $volcado $Bd 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    Bien "volcado en $volcado"
+                    $script:VolcadoFinal = $volcado
+                } else {
+                    Aviso "el volcado ha fallado. La base se va a borrar de todos modos (-Deshacer)"
+                }
+            }
+
+            # Las sesiones abiertas impiden el DROP DATABASE, y en un servidor que se retira siempre
+            # queda alguna: la API acaba de morir pero PostgreSQL tarda en enterarse.
+            EjecutarSqlD ("SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
+                          "WHERE datname = '$Bd' AND pid <> pg_backend_pid();") | Out-Null
+
+            if (EjecutarSqlD "DROP DATABASE IF EXISTS ""$Bd"";") {
+                ResultadoD "base de datos `"$Bd`" borrada"
+            } else {
+                Aviso "no he podido borrar la base de datos `"$Bd`""
+            }
+        }
+
+        # Los roles, despues de la base: mientras son duenos de algo, PostgreSQL no los deja caer.
+        foreach ($rol in @("judo_api", "judo_owner")) {
+            if ((PsqlD "SELECT 1 FROM pg_roles WHERE rolname = '$rol';") -eq "1") {
+                if (EjecutarSqlD "DROP ROLE IF EXISTS $rol;") {
+                    ResultadoD "rol $rol borrado"
+                } else {
+                    Aviso "no he podido borrar el rol $rol: aun es dueno de algo en otra base de datos"
+                }
+            } else {
+                Igual "el rol $rol no existia"
+            }
+        }
+
+        Paso "3/8  PostgreSQL"
+
+        # Cuantas bases quedan que NO sean de PostgreSQL ni de esta aplicacion. Es lo que decide si se
+        # puede desinstalar el gestor: en un equipo que ya lo tenia puesto -un portatil de trabajo,
+        # por ejemplo-, desinstalarlo se llevaria datos que no son de aqui.
+        $otras = PsqlD ("SELECT count(*) FROM pg_database WHERE NOT datistemplate " +
+                        "AND datname NOT IN ('postgres', '$Bd');")
+
+        if ($otras -notmatch '^\d+$') {
+            Aviso "no he podido comprobar si hay otras bases de datos: NO desinstalo PostgreSQL"
+        }
+        elseif ([int]$otras -gt 0) {
+            Aviso "en este cluster quedan $otras bases de datos que no son de esta aplicacion:"
+            $lista = PsqlD ("SELECT datname FROM pg_database WHERE NOT datistemplate " +
+                            "AND datname NOT IN ('postgres', '$Bd');")
+            foreach ($n in ($lista -split "`n")) { if ($n.Trim()) { Write-Host "     - $($n.Trim())" } }
+            Aviso "PostgreSQL se queda instalado. Desinstalarlo se llevaria esos datos por delante."
+        }
+        elseif (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Aviso "no hay winget: desinstala PostgreSQL desde 'Aplicaciones instaladas'"
+        }
+        else {
+            # El identificador exacto que hay puesto, y no uno fijo: la version instalada puede no ser
+            # la 18 que instala este mismo guion.
+            $id = (winget list --source winget 2>$null |
+                   Select-String 'PostgreSQL\.PostgreSQL\S*' |
+                   ForEach-Object { $_.Matches[0].Value } | Select-Object -First 1)
+
+            if (-not $id) {
+                Aviso "PostgreSQL no lo puso winget: desinstalalo desde 'Aplicaciones instaladas'"
+            } elseif (HacerD { winget uninstall --id $id --silent --disable-interactivity }) {
+                ResultadoD "PostgreSQL desinstalado ($id)"
+            } else {
+                Aviso "no he podido desinstalar PostgreSQL ($id). Hazlo desde 'Aplicaciones instaladas'"
+            }
+        }
+
+        $env:PGPASSWORD = $null
+    }
+
+    # ── 4. Certificado del almacen de confianza ───────────────────────────────────────────────────
+
+    Paso "4/8  Certificado del almacen de confianza"
+
+    $certs = @(Get-ChildItem "Cert:\LocalMachine\Root" -ErrorAction SilentlyContinue |
+               Where-Object { $_.Subject -match [regex]::Escape($Nombre) })
+
+    if ($certs.Count -eq 0) {
+        Igual "el certificado de $Nombre no estaba en el almacen de confianza"
+    } else {
+        foreach ($c in $certs) {
+            HacerD { Remove-Item "Cert:\LocalMachine\Root\$($c.Thumbprint)" -Force } | Out-Null
+        }
+        ResultadoD "certificado de $Nombre retirado del almacen de confianza ($($certs.Count))"
+    }
+
+    # El de LocalMachine\My, que es donde New-SelfSignedCertificate lo dejo al crearlo.
+    $propios = @(Get-ChildItem "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Subject -match [regex]::Escape($Nombre) })
+    if ($propios.Count -gt 0) {
+        foreach ($c in $propios) {
+            HacerD { Remove-Item "Cert:\LocalMachine\My\$($c.Thumbprint)" -Force } | Out-Null
+        }
+        ResultadoD "certificado de $Nombre retirado del almacen personal del equipo"
+    }
+
+    # ── 5. Archivo hosts ──────────────────────────────────────────────────────────────────────────
+
+    Paso "5/8  Archivo hosts"
+
+    if (-not (Test-Path $hosts) -or
+        -not (Get-Content $hosts | Where-Object { $_ -like "*$marcaHosts*" })) {
+        Igual "no habia ninguna linea de JudoAdministracion en el hosts"
+    } elseif ($Simular) {
+        Write-Host "   [simulado] quitaria del hosts las lineas marcadas con $marcaHosts" -ForegroundColor Yellow
+    } else {
+        $limpio = Get-Content $hosts | Where-Object { $_ -notlike "*$marcaHosts*" }
+        Set-Content -Path $hosts -Value $limpio -Encoding ASCII
+        Bien "linea de $Nombre quitada del hosts"
+    }
+
+    # ── 6. Cortafuegos ────────────────────────────────────────────────────────────────────────────
+
+    Paso "6/8  Cortafuegos"
+
+    $reglas = @('JudoAdministracion-Api', 'JudoAdministracion-PostgreSQL-Bloqueado')
+    $quitadas = 0
+    foreach ($nombreRegla in $reglas) {
+        if (Get-NetFirewallRule -Name $nombreRegla -ErrorAction SilentlyContinue) {
+            if (HacerD { Remove-NetFirewallRule -Name $nombreRegla }) { $quitadas++ }
+        }
+    }
+    if ($quitadas -gt 0) { ResultadoD "reglas del cortafuegos quitadas ($quitadas)" }
+    else                 { Igual "no habia reglas de JudoAdministracion en el cortafuegos" }
+
+    # ── 7. Configuracion de la aplicacion de escritorio ───────────────────────────────────────────
+    #
+    # Apunta a un servicio que ya no existe. Se quita solo si la escribio la instalacion: si alguien
+    # la ha tocado a mano, es suya.
+
+    Paso "7/8  Configuracion de la aplicacion de escritorio"
+
+    if (-not (Test-Path $configApp)) {
+        Igual "no hay configuracion de la aplicacion de escritorio que quitar"
+    } elseif ((Get-Content $configApp -Raw) -match 'preparar-servidor') {
+        if (HacerD { Remove-Item $configApp -Force }) {
+            ResultadoD "appsettings.Local.json de la aplicacion eliminado"
+        } else {
+            Aviso "no he podido borrar $configApp"
+        }
+    } else {
+        Aviso "hay un appsettings.Local.json que no escribio este guion: no lo toco"
+        Aviso "  $configApp"
+    }
+
+    # ── 8. Carpetas ───────────────────────────────────────────────────────────────────────────────
+
+    Paso "8/8  Carpetas"
+
+    $carpetas = @($Dir, "$Dir.anterior", "$Dir.nuevo",
+                  (Join-Path $env:ProgramData "JudoAdministracion\Copias"))
+
+    foreach ($carpeta in $carpetas) {
+        if (Test-Path $carpeta) {
+            if (HacerD { Remove-Item $carpeta -Recurse -Force }) { ResultadoD "borrada $carpeta" }
+            else { Aviso "no he podido borrar $carpeta (algo la tiene abierta?)" }
+        } else {
+            Igual "no existe $carpeta"
+        }
+    }
+
+    # ── Resumen ───────────────────────────────────────────────────────────────────────────────────
+
+    Write-Host ""
+    if ($Simular) {
+        Write-Host "Simulacion terminada. No se ha cambiado nada." -ForegroundColor Yellow
+        Write-Host "   Quita -Simular para hacerlo de verdad."
+    } else {
+        Write-Host "Este equipo ya no es el servidor de JudoAdministracion." -ForegroundColor Green
+        if ($script:VolcadoFinal) {
+            Write-Host "   El volcado de la base de datos esta en:  $($script:VolcadoFinal)"
+        }
+        Write-Host ""
+        Write-Host "   La aplicacion de escritorio sigue instalada; se desinstala desde"
+        Write-Host "   'Aplicaciones instaladas' como cualquier otro programa."
+        Write-Host ""
+        Write-Host "   Falta devolver la red, que es lo que le importa a quien use este equipo:" -ForegroundColor Yellow
+        Write-Host "     powershell -ExecutionPolicy Bypass -File .\configurar-red.ps1 -Deshacer"
+    }
+    Write-Host ""
+    exit 0
+}
 
 Write-Host ""
 Write-Host "Preparacion del servidor de JudoAdministracion" -ForegroundColor Cyan

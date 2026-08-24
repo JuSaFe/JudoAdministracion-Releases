@@ -55,6 +55,10 @@ REGENERAR_CERTIFICADO=0
 FORZAR_CONFIGURACION=0
 SIN_PREGUNTAS=0
 
+DESHACER=0
+SIMULAR=0
+SIN_BASE_DATOS=0
+
 ayuda() {
     cat <<'AYUDA'
 Prepara el servidor de competición de JudoAdministración. Sin parámetros hace TODO lo que hace
@@ -91,6 +95,22 @@ Qué se puede cambiar:
   --si                     No preguntar nada
   --ayuda                  Esto
 
+Desinstalar:
+
+  --deshacer               Quitar de este equipo TODO lo que puso este guion, incluidas la
+                           base de datos, los roles y PostgreSQL. Ver abajo.
+  --simular                Con --deshacer: enseñar lo que haría, sin tocar nada
+  --sin-base-datos         Con --deshacer: conservar la base de datos, los roles y PostgreSQL
+
+--deshacer BORRA LA BASE DE DATOS. Se lleva, por este orden: el servicio del sistema, la base de
+datos y sus roles, PostgreSQL, el certificado del almacén de confianza, la línea del hosts, las
+reglas del cortafuegos y la carpeta del servicio con sus copias. Antes de borrar la base de datos
+saca un volcado al home, que es lo único que queda al terminar. Pruébalo con --simular primero.
+
+PostgreSQL solo se desinstala si en el clúster NO hay más bases de datos que las de esta
+aplicación: en un equipo que ya lo tenía puesto de antes, desinstalarlo se llevaría datos que no
+son de aquí. Si las hay, se dice y se deja el gestor donde está.
+
 Al terminar deja las contraseñas en ~/judo-credenciales-servidor.txt y, en ~/judo-puestos/, todo
 lo que hay que llevarse a los puestos: el certificado público y los guiones de preparación.
 AYUDA
@@ -118,6 +138,9 @@ while [[ $# -gt 0 ]]; do
         --regenerar-certificado)  REGENERAR_CERTIFICADO=1; shift ;;
         --forzar-configuracion)   FORZAR_CONFIGURACION=1; shift ;;
         --si)                     SIN_PREGUNTAS=1; shift ;;
+        --deshacer)               DESHACER=1; shift ;;
+        --simular)                SIMULAR=1; shift ;;
+        --sin-base-datos)         SIN_BASE_DATOS=1; shift ;;
         --ayuda|-h)               ayuda; exit 0 ;;
 
         # Nombres de la versión anterior, cuando había que pedir cada cosa. Ahora son el
@@ -244,6 +267,449 @@ psql_super() {
         local)   psql "$@" ;;
     esac
 }
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  DESHACER
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#
+# Quita de este equipo todo lo que puso la instalación, en el orden inverso al que lo puso. El orden
+# no es cosmético: el volcado de la base de datos tiene que salir ANTES de borrarla, y borrarla antes
+# de desinstalar PostgreSQL, porque después ya no habría con qué hacer ninguna de las dos cosas.
+#
+# Esto BORRA LA BASE DE DATOS sin volver a preguntar. Es una decisión deliberada: --deshacer es lo
+# que se ejecuta al retirar un servidor o al devolver un equipo prestado, y dejar la base de datos
+# ahí «por si acaso» convertía la desinstalación en algo que nunca terminaba de estar hecho. El
+# volcado del paso 2 es la red de seguridad, y --simular es la forma de ver qué va a pasar antes de
+# que pase.
+
+# Las órdenes que borran o desinstalan pasan por aquí, y así --simular sale gratis en todas.
+#
+# En simulación no ejecuta nada y no imprime nada: la línea que se lee la pone el llamante con
+# «resultado», que es la que sabe explicar qué se ha hecho. Que «hacer» imprimiera la orden en crudo
+# tenía un problema peor que ser ilegible: los llamantes que redirigían su salida a /dev/null se
+# comían ese aviso y dejaban un «✓ borrado» que no era verdad.
+hacer() {
+    [[ $SIMULAR -eq 1 ]] && return 0
+    "$@"
+}
+
+# Igual, pero sin dejar salir lo que escriba la orden. psql contesta "DROP ROLE" a cada cosa y aquí
+# el resultado ya se cuenta con «resultado».
+hacer_callado() {
+    [[ $SIMULAR -eq 1 ]] && return 0
+    "$@" >/dev/null 2>&1
+}
+
+# «✓ hecho» cuando se ha hecho, «[simulado] hecho» cuando solo se ha simulado. Un ✓ en modo
+# simulación es una mentira, y es justo el modo en el que hay que poder confiar en lo que se lee.
+resultado() {
+    if [[ $SIMULAR -eq 1 ]]; then
+        echo "   ${AMARILLO}[simulado]${FIN} $*"
+    else
+        bien "$*"
+    fi
+}
+
+PLIST_LAUNCHD="/Library/LaunchDaemons/es.judo.api.plist"
+UNIDAD_SYSTEMD="/etc/systemd/system/judo-api.service"
+
+quitar_servicio() {
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        if [[ -f "$PLIST_LAUNCHD" ]]; then
+            hacer_callado sudo launchctl bootout system/es.judo.api
+            hacer sudo rm -f "$PLIST_LAUNCHD"
+            resultado "servicio launchd es.judo.api quitado"
+        else
+            igual "no había servicio launchd instalado"
+        fi
+        return
+    fi
+
+    if [[ -f "$UNIDAD_SYSTEMD" ]]; then
+        # disable además de stop: sin él el servicio volvería a arrancar al encender el equipo,
+        # buscando una carpeta que este mismo guion está a punto de borrar.
+        hacer_callado sudo systemctl stop judo-api
+        hacer_callado sudo systemctl disable judo-api
+        hacer sudo rm -f "$UNIDAD_SYSTEMD"
+        hacer_callado sudo systemctl daemon-reload
+        resultado "servicio systemd judo-api quitado"
+    else
+        igual "no había servicio systemd instalado"
+    fi
+}
+
+# Lo que queda escuchando aunque no fuera un servicio del sistema: la API se puede haber lanzado
+# desde el botón de la aplicación de escritorio, y entonces es un proceso suelto.
+parar_lo_que_escuche() {
+    local pids
+    pids="$(lsof -ti "tcp:$PUERTO" -sTCP:LISTEN 2>/dev/null || true)"
+
+    [[ -z "$pids" ]] && return 0
+
+    hacer_callado sudo kill $pids
+    resultado "parado lo que quedaba escuchando en el puerto $PUERTO"
+}
+
+volcar_base_datos() {
+    local destino="$HOGAR/judo-volcado-antes-de-desinstalar-$(date +%Y%m%d-%H%M%S).dump"
+
+    if ! command -v pg_dump >/dev/null; then
+        aviso "no encuentro pg_dump: NO hay volcado, y la base de datos se va a borrar igual"
+        return 0
+    fi
+
+    if [[ "$EXISTE_BD" != "1" ]]; then
+        igual "la base de datos \"$BD\" no existe: no hay nada que volcar"
+        return 0
+    fi
+
+    if [[ $SIMULAR -eq 1 ]]; then
+        echo "   ${AMARILLO}[simulado]${FIN} volcaría \"$BD\" en $destino"
+        return 0
+    fi
+
+    # Con el superusuario y no con judo_owner: su contraseña no está escrita en ninguna parte, y
+    # aquí ya da igual quién sea el dueño porque el siguiente paso borra la base entera.
+    if psql_super -d postgres -tAc 'SELECT 1' >/dev/null 2>&1 \
+       && pg_dump_super "$BD" "$destino"; then
+        [[ -n "${SUDO_USER:-}" ]] && sudo chown "$SUDO_USER" "$destino" 2>/dev/null || true
+        chmod 600 "$destino" 2>/dev/null || true
+        bien "volcado en $destino"
+        VOLCADO="$destino"
+    else
+        aviso "el volcado ha fallado. La base de datos se va a borrar de todos modos (--deshacer)"
+    fi
+}
+
+# pg_dump por la misma vía que psql: en Linux con autenticación peer hay que ir como el usuario del
+# sistema, y en Homebrew basta el usuario que ha iniciado sesión.
+pg_dump_super() {
+    case "$MODO_PSQL" in
+        usuario) pg_dump -U "$SUPERUSUARIO" -Fc -f "$2" "$1" ;;
+        sudo)    sudo -u "$SUPERUSUARIO" pg_dump -Fc -f "$2" "$1" ;;
+        local)   pg_dump -Fc -f "$2" "$1" ;;
+    esac
+}
+
+borrar_base_datos() {
+    if [[ "$EXISTE_BD" == "1" ]]; then
+        # Las sesiones abiertas impiden el DROP DATABASE, y en un servidor que se retira siempre
+        # queda alguna: la propia API acaba de morir pero PostgreSQL tarda en enterarse.
+        hacer_callado psql_super -d postgres -c \
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$BD' AND pid <> pg_backend_pid();"
+        hacer_callado psql_super -d postgres -c "DROP DATABASE IF EXISTS \"$BD\";"
+        resultado "base de datos \"$BD\" borrada"
+    else
+        igual "la base de datos \"$BD\" no existía"
+    fi
+
+    # Los roles, después de la base: mientras son dueños de algo, PostgreSQL no los deja caer.
+    local rol
+    for rol in judo_api judo_owner; do
+        if [[ "$(psql_super -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname = '$rol';")" == "1" ]]; then
+            if hacer_callado psql_super -d postgres -c "DROP ROLE IF EXISTS $rol;"; then
+                resultado "rol $rol borrado"
+            else
+                aviso "no he podido borrar el rol $rol: aún es dueño de algo en otra base de datos"
+            fi
+        else
+            igual "el rol $rol no existía"
+        fi
+    done
+}
+
+# Cuántas bases de datos quedan que NO sean de PostgreSQL ni de esta aplicación. Es lo que decide si
+# se puede desinstalar el gestor: en un equipo que ya lo tenía puesto —un portátil de trabajo, por
+# ejemplo—, desinstalarlo se llevaría datos que no son de aquí.
+otras_bases_de_datos() {
+    local cuenta
+    cuenta="$(psql_super -d postgres -tAc \
+        "SELECT count(*) FROM pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres', '$BD');" \
+        2>/dev/null)"
+
+    # Una respuesta vacía es "no lo sé", no "ninguna": ante la duda no se desinstala nada.
+    [[ "$cuenta" =~ ^[0-9]+$ ]] && echo "$cuenta" || echo "desconocido"
+}
+
+desinstalar_postgresql() {
+    local otras; otras="$(otras_bases_de_datos)"
+
+    if [[ "$otras" == "desconocido" ]]; then
+        aviso "no he podido comprobar si hay otras bases de datos: NO desinstalo PostgreSQL"
+        return 0
+    fi
+
+    if [[ "$otras" -gt 0 ]]; then
+        aviso "en este clúster quedan $otras bases de datos que no son de esta aplicación:"
+        psql_super -d postgres -tAc \
+            "SELECT '     · ' || datname FROM pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres', '$BD');" \
+            2>/dev/null || true
+        aviso "PostgreSQL se queda instalado. Desinstalarlo se llevaría esos datos por delante."
+        return 0
+    fi
+
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        command -v brew >/dev/null || { aviso "no hay Homebrew: desinstala PostgreSQL a mano"; return 0; }
+
+        local formula
+        formula="$(brew list --formula 2>/dev/null | grep '^postgresql@' | sort -t@ -k2 -n | tail -1 || true)"
+
+        if [[ -z "$formula" ]]; then
+            aviso "PostgreSQL no lo puso Homebrew: desinstálalo por donde lo instalaste"
+            return 0
+        fi
+
+        hacer_callado brew services stop "$formula"
+        hacer brew uninstall "$formula"
+        resultado "$formula desinstalado"
+
+    elif command -v apt-get >/dev/null; then
+        # Los paquetes concretos que hay puestos, y no un comodín: "apt-get purge postgresql*" en un
+        # equipo con otras cosas instaladas es exactamente el tipo de orden que se lleva lo que no
+        # debe.
+        local paquetes
+        paquetes="$(dpkg-query -W -f='${Package} ${Status}\n' 'postgresql*' 2>/dev/null \
+                    | awk '$NF == "installed" { print $1 }' | tr '\n' ' ' || true)"
+
+        if [[ -z "${paquetes// /}" ]]; then
+            aviso "no hay paquetes de PostgreSQL instalados con apt: desinstálalo por donde lo instalaste"
+            return 0
+        fi
+
+        hacer_callado sudo systemctl stop postgresql
+        # purge y no remove: remove deja la configuración y el clúster, o sea justo lo que se quiere
+        # quitar. Los datos ya están volcados en el paso 2.
+        hacer sudo apt-get purge -y $paquetes
+        hacer sudo apt-get autoremove -y
+        resultado "PostgreSQL desinstalado ($paquetes)"
+
+    elif command -v dnf >/dev/null; then
+        hacer_callado sudo systemctl stop postgresql
+        hacer sudo dnf remove -y postgresql-server postgresql-contrib
+        resultado "PostgreSQL desinstalado"
+    else
+        aviso "no sé desinstalar PostgreSQL en este sistema: hazlo a mano"
+    fi
+}
+
+quitar_certificado() {
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        if security find-certificate -c "$NOMBRE_SERVIDOR" /Library/Keychains/System.keychain \
+           >/dev/null 2>&1; then
+            hacer_callado sudo security delete-certificate -c "$NOMBRE_SERVIDOR" \
+                 /Library/Keychains/System.keychain
+            resultado "certificado de $NOMBRE_SERVIDOR retirado del llavero del sistema"
+        else
+            igual "el certificado de $NOMBRE_SERVIDOR no estaba en el llavero"
+        fi
+        return
+    fi
+
+    local instalado=""
+    [[ -f "/usr/local/share/ca-certificates/$NOMBRE_SERVIDOR.crt" ]] \
+        && instalado="/usr/local/share/ca-certificates/$NOMBRE_SERVIDOR.crt"
+    [[ -f "/etc/pki/ca-trust/source/anchors/$NOMBRE_SERVIDOR.crt" ]] \
+        && instalado="/etc/pki/ca-trust/source/anchors/$NOMBRE_SERVIDOR.crt"
+
+    if [[ -z "$instalado" ]]; then
+        igual "el certificado de $NOMBRE_SERVIDOR no estaba en el almacén del sistema"
+        return
+    fi
+
+    hacer sudo rm -f "$instalado"
+
+    if command -v update-ca-certificates >/dev/null; then
+        # --fresh: sin él, update-ca-certificates añade pero no retira, y el certificado seguiría
+        # siendo de confianza aunque su archivo ya no esté.
+        hacer_callado sudo update-ca-certificates --fresh
+    elif command -v update-ca-trust >/dev/null; then
+        hacer_callado sudo update-ca-trust
+    fi
+
+    resultado "certificado de $NOMBRE_SERVIDOR retirado del almacén del sistema"
+}
+
+quitar_hosts() {
+    if ! grep -q "$MARCA_HOSTS" "$HOSTS" 2>/dev/null; then
+        igual "no había ninguna línea de JudoAdministración en $HOSTS"
+        return
+    fi
+
+    if [[ $SIMULAR -eq 1 ]]; then
+        echo "   ${AMARILLO}[simulado]${FIN} quitaría de $HOSTS las líneas marcadas con $MARCA_HOSTS"
+        return
+    fi
+
+    local temporal; temporal="$(mktemp)"
+    grep -v "$MARCA_HOSTS" "$HOSTS" > "$temporal" || true
+    # cat y no mv, igual que en preparar-puesto: así /etc/hosts conserva su dueño y sus permisos.
+    sudo cp "$temporal" "$HOSTS.judo-anterior" 2>/dev/null || true
+    cat "$temporal" | sudo tee "$HOSTS" >/dev/null
+    rm -f "$temporal"
+    sudo rm -f "$HOSTS.judo-anterior" 2>/dev/null || true
+    bien "línea de $NOMBRE_SERVIDOR quitada de $HOSTS"
+}
+
+quitar_cortafuegos() {
+    if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+        hacer_callado sudo ufw delete allow proto tcp from "$SUBRED" to any port "$PUERTO"
+        hacer_callado sudo ufw delete deny 5432/tcp
+        resultado "reglas de ufw quitadas"
+        return
+    fi
+
+    if command -v firewall-cmd >/dev/null && sudo firewall-cmd --state >/dev/null 2>&1; then
+        hacer_callado sudo firewall-cmd --permanent --remove-rich-rule \
+            "rule family=ipv4 source address=$SUBRED port port=$PUERTO protocol=tcp accept"
+        hacer_callado sudo firewall-cmd --permanent --remove-rich-rule \
+            "rule family=ipv4 port port=5432 protocol=tcp drop"
+        hacer_callado sudo firewall-cmd --reload
+        resultado "reglas de firewalld quitadas"
+        return
+    fi
+
+    igual "no hay cortafuegos activo que tocar"
+}
+
+borrar_carpetas() {
+    local carpeta
+    for carpeta in "$DIR_SERVICIO" "$DIR_SERVICIO.anterior" "$DIR_SERVICIO.nuevo" \
+                   "/opt/judoadministracion-copias"
+    do
+        if [[ -d "$carpeta" ]]; then
+            hacer sudo rm -rf "$carpeta"
+            resultado "borrada $carpeta"
+        else
+            igual "no existe $carpeta"
+        fi
+    done
+}
+
+# La configuración de la aplicación de escritorio de ESTE equipo apunta a un servicio que ya no
+# existe. Se quita solo si la escribió la instalación: si alguien la ha tocado a mano, es suya.
+# Los mismos sitios que mira buscar_aplicacion, que está definida más abajo en el guion y por tanto
+# no existe todavía cuando corre este bloque.
+localizar_aplicacion() {
+    [[ -n "$DIR_APP" ]] && return 0
+    local candidata
+    for candidata in \
+        "/Applications/JudoAdministracion.app/Contents/MacOS" \
+        "/opt/judoadministracion" \
+        "$HOGAR/Applications/JudoAdministracion.app/Contents/MacOS"
+    do
+        if [[ -x "$candidata/JudoAdministracion" ]]; then DIR_APP="$candidata"; return 0; fi
+    done
+    return 1
+}
+
+quitar_config_aplicacion() {
+    if [[ -z "$DIR_APP" ]] || [[ ! -f "$DIR_APP/appsettings.Local.json" ]]; then
+        igual "no hay configuración de la aplicación de escritorio que quitar"
+        return
+    fi
+
+    if grep -q 'preparar-servidor' "$DIR_APP/appsettings.Local.json" 2>/dev/null; then
+        hacer sudo rm -f "$DIR_APP/appsettings.Local.json"
+        resultado "appsettings.Local.json de la aplicación eliminado"
+    else
+        aviso "hay un appsettings.Local.json que no escribió este guion: no lo toco"
+        aviso "  $DIR_APP/appsettings.Local.json"
+    fi
+}
+
+if [[ $DESHACER -eq 1 ]]; then
+    # set +e para todo el bloque, al contrario que el resto del guion.
+    #
+    # Instalar a medias es peor que no instalar, y de ahí el set -e de arriba. Desinstalar es lo
+    # contrario: si no se puede quitar una regla del cortafuegos, lo que hay que hacer es seguir
+    # quitando el resto y decir qué ha quedado, no abortar y dejar el equipo a mitad de camino con
+    # un servicio apuntando a una carpeta que ya no existe.
+    set +e
+
+    echo
+    echo "${AZUL}Desinstalar el servidor de JudoAdministración de este equipo${FIN}"
+    echo "   base       $BD"
+    echo "   carpeta    $DIR_SERVICIO"
+    echo "   servidor   $NOMBRE_SERVIDOR, puerto $PUERTO"
+    echo
+    if [[ $SIN_BASE_DATOS -eq 1 ]]; then
+        aviso "se conservan la base de datos, los roles y PostgreSQL (--sin-base-datos)"
+    else
+        echo "   ${ROJO}Se va a BORRAR la base de datos \"$BD\", sus roles y PostgreSQL.${FIN}"
+        echo "   ${ROJO}Antes se saca un volcado al home, y es lo único que quedará.${FIN}"
+    fi
+    [[ $SIMULAR -eq 1 ]] && aviso "modo simulación: no se cambia nada"
+    echo
+
+    confirmar "¿Sigo?" || { echo "   Cancelado."; exit 0; }
+
+    # Fuera de la carpeta que se va a borrar, por si el guion se está ejecutando desde dentro (es lo
+    # normal: viene dentro del paquete del servicio).
+    cd / || true
+
+    paso "1/8  El servicio"
+    quitar_servicio
+    parar_lo_que_escuche
+
+    if [[ $SIN_BASE_DATOS -eq 1 ]]; then
+        paso "2/8  Base de datos"
+        igual "se conserva (--sin-base-datos)"
+        paso "3/8  PostgreSQL"
+        igual "se conserva (--sin-base-datos)"
+    else
+        if resolver_psql; then
+            EXISTE_BD="$(psql_super -d postgres -tAc \
+                "SELECT 1 FROM pg_database WHERE datname = '$BD';" 2>/dev/null || true)"
+
+            paso "2/8  Volcado y borrado de la base de datos"
+            volcar_base_datos
+            borrar_base_datos
+
+            paso "3/8  PostgreSQL"
+            desinstalar_postgresql
+        else
+            paso "2/8  Base de datos"
+            aviso "PostgreSQL no responde, así que no puedo volcarla ni borrarla."
+            aviso "  Si el gestor vuelve a arrancar, la base \"$BD\" seguirá ahí."
+            paso "3/8  PostgreSQL"
+            igual "no responde: no lo toco"
+        fi
+    fi
+
+    paso "4/8  Certificado del almacén de confianza"
+    quitar_certificado
+
+    paso "5/8  Archivo hosts"
+    quitar_hosts
+
+    paso "6/8  Cortafuegos"
+    quitar_cortafuegos
+
+    paso "7/8  Configuración de la aplicación de escritorio"
+    localizar_aplicacion >/dev/null 2>&1
+    quitar_config_aplicacion
+
+    paso "8/8  Carpetas"
+    borrar_carpetas
+
+    echo
+    if [[ $SIMULAR -eq 1 ]]; then
+        echo "${AMARILLO}Simulación terminada. No se ha cambiado nada.${FIN}"
+        echo "   Quita --simular para hacerlo de verdad."
+    else
+        echo "${VERDE}Este equipo ya no es el servidor de JudoAdministración.${FIN}"
+        [[ -n "${VOLCADO:-}" ]] && echo "   El volcado de la base de datos está en:  $VOLCADO"
+        echo
+        echo "   La aplicación de escritorio sigue instalada; se desinstala como cualquier"
+        echo "   otro programa."
+        echo
+        echo "   ${AMARILLO}Falta devolver la red, que es lo que le importa a quien use este equipo:${FIN}"
+        echo "     sudo configurar-red.sh --deshacer"
+    fi
+    echo
+    exit 0
+fi
+
 
 echo
 echo "${AZUL}Preparación del servidor de JudoAdministración${FIN}"
@@ -683,7 +1149,7 @@ else
         echo "${ROJO}El servicio no llegó a responder. Sus últimas líneas:${FIN}"
         tail -20 "$REGISTRO" >&2
         rm -f "$REGISTRO"
-        fallo "Inicialización fallida. Los fallos frecuentes están en la guía §9."
+        fallo "Inicialización fallida. Los fallos frecuentes están en la guía §10."
     fi
     rm -f "$REGISTRO"
 
