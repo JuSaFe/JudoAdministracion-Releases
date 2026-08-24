@@ -1028,6 +1028,13 @@ La versión anterior del servicio se conserva como `judoadministracion-api.anter
 `appsettings.Local.json` intacto dentro. Para volver atrás a mano: parar el servicio, cambiar las dos
 carpetas de nombre y arrancar.
 
+**Si el servidor se quedó a medias.** La aplicación y el servicio de un mismo equipo pueden acabar en
+versiones distintas: si la actualización falla en el servicio, la aplicación se queda en la nueva y el
+servicio revierte a la vieja. La pantalla mira **cada mitad por separado**, así que en ese caso vuelve
+a ofrecer la actualización del servicio aunque la aplicación ya esté en la última: se actualiza solo
+el servicio, la aplicación no se cierra, y al terminar los puestos ya pueden entrar. Lo mismo al
+revés: si lo atrasado es solo la aplicación, el servicio no se toca ni se para.
+
 ### 7.2 A mano (sin Internet, o si la actualización falla)
 
 ```
