@@ -644,13 +644,37 @@ if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\
 # ¿Servidor nuevo o ya configurado? Se decide antes de tocar la base de datos, porque de ello depende
 # si las contraseñas de los roles se pueden cambiar o no.
 $conservarConfig = (Test-Path $config) -and (-not $ForzarConfiguracion)
+
+# La contrasena del certificado no se guarda en ningun otro sitio que la propia configuracion, asi
+# que se recupera SIEMPRE que haya una: sin ella, reescribir la configuracion obligaria a rehacer el
+# certificado y a repartirlo otra vez por los puestos, que es un precio absurdo por un archivo que
+# esta ahi al lado.
+if (Test-Path $config) {
+    $cadenaExistente = LeerJson $config 'ConnectionString'
+    if (-not $ClavePfx) { $ClavePfx = LeerJson $config 'CertificadoPassword' }
+}
+
+# Una configuracion que todavia apunta a judo_owner es una instalacion a medias, no una instalacion
+# hecha. La que escribe el paso 6 lleva ese rol y la inicializacion puesta, y dura solo lo que tarda
+# el paso 7 en crear el esquema: al terminar bien, el propio paso 7 la reescribe con judo_api. Si
+# sigue ahi es que una ejecucion anterior se quedo por el camino.
+#
+# Conservarla seria lo peor de los dos mundos: el paso 7 se saltaria -o sea, el esquema seguiria sin
+# crearse- y el servicio quedaria corriendo de forma permanente con el rol que puede alterarlo, que
+# es justo lo que la separacion de roles existe para evitar. Asi que se rehace.
+if ($conservarConfig -and $cadenaExistente -match 'Username=judo_owner') {
+    $conservarConfig = $false
+    $script:claveTokens = LeerJson $config 'ClaveFirmaTokens'
+    Aviso "la configuracion anterior se quedo a medias: todavia apunta a judo_owner"
+    Aviso "se rehace la inicializacion (paso 7); el certificado y la clave de tokens se conservan"
+}
+
 if ($conservarConfig) {
     Igual "hay configuracion previa: se conservara, contrasenas incluidas"
 
     # De esa configuración se puede recuperar lo que hace falta para los pasos que vienen después
     # —configurar la aplicación de escritorio, sobre todo—, así que una segunda ejecución sirve para
     # completar un servidor a medias en vez de quedarse a la mitad.
-    $cadenaExistente = LeerJson $config 'ConnectionString'
     if ($cadenaExistente -and $cadenaExistente -match 'Username=judo_api;Password=(.+)$') {
         $ClaveApi = $Matches[1]
         Bien "contrasena de judo_api recuperada de la configuracion existente"
@@ -963,10 +987,13 @@ else {
         Fallo "No puedo escribir la configuracion sin la contrasena del certificado.`n        Usa -ClavePfx <contrasena> o -RegenerarCertificado."
     }
     # Larga y estable: si cambia entre reinicios, todas las sesiones abiertas dejan de valer y hay
-    # que volver a entrar en los cinco puestos.
-    $bytes = New-Object byte[] 48
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    $script:claveTokens = [Convert]::ToBase64String($bytes)
+    # que volver a entrar en los cinco puestos. Por eso, si se ha podido recuperar de la
+    # configuracion anterior, se reutiliza en vez de generar otra.
+    if (-not $script:claveTokens) {
+        $bytes = New-Object byte[] 48
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+        $script:claveTokens = [Convert]::ToBase64String($bytes)
+    }
 
     EscribirConfiguracion -Usuario "judo_owner" -Clave $ClaveOwner -Inicializar $true
     Bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
@@ -1169,6 +1196,10 @@ else { Aviso "PostgreSQL escucha en `"$escuchaPg`" y deberia hacerlo solo en loc
 
 Paso "10/10  Arranque automatico"
 
+# Se pone a falso solo si la comprobacion de aqui abajo se hace y no pasa. Con -SinTarea o
+# -SinConfianza no se comprueba nada, y entonces no hay nada que declarar roto.
+$script:servicioResponde = $true
+
 if ($SinTarea) {
     Aviso "no se instala el arranque automatico (-SinTarea)"
     Aviso "la API habra que arrancarla a mano, o desde el boton de la propia aplicacion"
@@ -1201,8 +1232,50 @@ else {
         Bien "el servicio responde en https://localhost:$Puerto/api/estado y su certificado es de confianza"
     }
     else {
-        Aviso "el servicio no responde todavia. Mira el estado de la tarea:"
-        Aviso "  Get-ScheduledTaskInfo -TaskName JudoAdministracionApi"
+        $script:servicioResponde = $false
+
+        $info = Get-ScheduledTaskInfo -TaskName "JudoAdministracionApi" -ErrorAction SilentlyContinue
+        if ($info) { Aviso ("el servicio no responde (ultimo resultado de la tarea: 0x{0:X8})" -f $info.LastTaskResult) }
+        else       { Aviso "el servicio no responde" }
+
+        # 0x800710E0 no es un fallo del servicio: es la tarea negandose a arrancar OTRA copia porque
+        # ya habia una en marcha (la politica por defecto de las tareas programadas). Pasa cuando la
+        # API la habia lanzado ya la aplicacion de escritorio desde su boton, o cuando quedo suelta
+        # de un intento anterior. Conviene decirlo, porque el numero por si solo lleva a buscar en el
+        # sitio equivocado.
+        if ($info -and $info.LastTaskResult -eq 0x800710E0) {
+            Aviso "  ese codigo significa que ya habia otra copia del servicio en marcha"
+        }
+
+        # La tarea programada no guarda por ningun lado lo que el servicio escribe al arrancar, asi
+        # que ese codigo es TODO lo que queda, y un numero no dice que hay que arreglar. La unica
+        # forma de ver el mensaje es lanzar el binario a mano un momento; hay que dejar antes el
+        # puerto libre -tarea parada y copias sueltas incluidas-, porque si no el que arranca a mano
+        # se lo encuentra cogido y lo que se lee es "address already in use" en vez del fallo de
+        # verdad. La tarea se vuelve a arrancar al final del bloque.
+        Stop-ScheduledTask -TaskName "JudoAdministracionApi" -ErrorAction SilentlyContinue
+        Get-Process -Name "JudoAdministracion.Api" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+
+        $registroPrueba = Join-Path $env:TEMP "judo-servicio.log"
+        Remove-Item $registroPrueba, "$registroPrueba.err" -Force -ErrorAction SilentlyContinue
+
+        $prueba = Start-Process -FilePath $binario -WorkingDirectory $Dir -PassThru `
+                                -RedirectStandardOutput $registroPrueba `
+                                -RedirectStandardError "$registroPrueba.err" -WindowStyle Hidden
+        Start-Sleep -Seconds 10
+        if (-not $prueba.HasExited) { Stop-Process -Id $prueba.Id -Force }
+
+        Write-Host ""
+        Write-Host "Lo que dice el servicio al arrancar:" -ForegroundColor Red
+        if (Test-Path $registroPrueba)       { Get-Content $registroPrueba       -Tail 20 }
+        if (Test-Path "$registroPrueba.err") { Get-Content "$registroPrueba.err" -Tail 20 }
+        Write-Host ""
+
+        # Y se vuelve a dejar la tarea como estaba: si el fallo se arregla por fuera, el servicio
+        # tiene que levantarse solo sin volver a ejecutar este guion.
+        Start-ScheduledTask -TaskName "JudoAdministracionApi" -ErrorAction SilentlyContinue
     }
 }
 
@@ -1282,7 +1355,15 @@ restaurada no deja el servidor funcionando (Documentacion/01-Guia-de-Instalacion
 $env:PGPASSWORD = $null
 
 Write-Host ""
-Write-Host "Servidor preparado." -ForegroundColor Green
+if ($script:servicioResponde) {
+    Write-Host "Servidor preparado." -ForegroundColor Green
+}
+else {
+    # Nada de "preparado": el servicio no responde, o sea que este servidor NO sirve todavia. Decir
+    # lo contrario es peor que no decir nada, porque lo siguiente que se hace es irse a los puestos.
+    Write-Host "Servidor SIN TERMINAR: el servicio no llega a responder." -ForegroundColor Red
+    Write-Host "Arriba esta lo que dice al arrancar. Los fallos frecuentes, en la guia 01, 9." -ForegroundColor Red
+}
 Write-Host ""
 if (-not $conservarConfig) {
     Write-Host "   Contrasenas guardadas en:  $credenciales"
@@ -1298,3 +1379,8 @@ Write-Host "   Lo que hay que llevarse a los puestos, en una sola carpeta:"
 Write-Host "     $paraPuestos"
 Write-Host "     (el certificado y los guiones de preparacion, con su LEEME.txt)"
 Write-Host ""
+
+# El resumen se imprime igual aunque el servicio no responda -las contrasenas y la carpeta de los
+# puestos hacen falta de todas formas-, pero el codigo de salida tiene que decir la verdad: hay
+# guiones y personas que se fian de el para saber si pueden seguir.
+if (-not $script:servicioResponde) { exit 1 }
