@@ -874,12 +874,22 @@ CODIFICACION="$(psql_super -d postgres -tAc \
 bien "codificación UTF8"
 
 # La ordenación decide cómo se listan los apellidos. Con "C", los acentuados se van todos al final.
-ORDEN="$(psql_super -d "$BD" -tAc \
-    "SELECT string_agg(x, ' < ' ORDER BY x) FROM (VALUES ('Ávila'),('Alicante'),('Zamora'),('Ñuño')) t(x);")"
-if [[ "$ORDEN" == "Alicante < Ávila < Ñuño < Zamora" ]]; then
+#
+# La comparación se hace DENTRO de PostgreSQL y sólo vuelve "ok" o "no": ni la consulta que va ni el
+# resultado que viene llevan una sola letra acentuada, así que ninguna conversión de codificación por
+# el camino puede hacer que "Ávila" deje de coincidir consigo mismo y salte el aviso con una
+# ordenación que en realidad era correcta. Las acentuadas van con escapes U&'\00C1' de SQL, en ASCII.
+# El guion de Windows hace exactamente esta misma comprobación.
+SQL_ORDEN="SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES"
+SQL_ORDEN="$SQL_ORDEN (U&'\\00C1vila'),('Alicante'),('Zamora'),(U&'\\00D1u\\00F1o')) t(x)) ="
+SQL_ORDEN="$SQL_ORDEN U&'Alicante|\\00C1vila|\\00D1u\\00F1o|Zamora' THEN 'ok' ELSE 'no' END;"
+
+if [[ "$(psql_super -d "$BD" -tAc "$SQL_ORDEN")" == "ok" ]]; then
     bien "ordenación correcta para castellano"
 else
-    aviso "ordenación dudosa: $ORDEN"
+    INTERCALACION="$(psql_super -d postgres -tAc \
+        "SELECT datcollate FROM pg_database WHERE datname = '$BD';")"
+    aviso "ordenación dudosa: la base está creada con la intercalación $INTERCALACION"
     aviso "los listados saldrán con los acentos fuera de sitio (guía §3.2)"
 fi
 

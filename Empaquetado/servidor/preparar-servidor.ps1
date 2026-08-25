@@ -102,6 +102,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# La consola de Windows abre en la pagina de codigos del sistema (850 o 437 en un equipo espanol) y
+# psql devuelve los datos del servidor en UTF-8. Sin igualar las dos, cualquier acento que venga de
+# la base de datos se ve como dos simbolos raros de dibujo por pantalla. El ajuste solo afecta a
+# esta ventana mientras dura el guion.
+try {
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    $OutputEncoding           = New-Object Text.UTF8Encoding($false)
+    $env:PGCLIENTENCODING     = "UTF8"
+}
+catch {
+    # Salida redirigida a un archivo o sin consola: no poder ajustarla no es motivo para no seguir.
+}
+
 # ── Utilidades ────────────────────────────────────────────────────────────────────────────────────
 
 function Paso  ($t) { Write-Host ""; Write-Host "-- $t" -ForegroundColor Cyan }
@@ -733,10 +746,21 @@ if ($codificacion -ne "UTF8") { Fallo "La base de datos esta en $codificacion y 
 Bien "codificacion UTF8"
 
 # La ordenacion decide como se listan los apellidos. Con "C", los acentuados se van todos al final.
-$orden = PsqlValor -Base $Bd -Consulta "SELECT string_agg(x, ' < ' ORDER BY x) FROM (VALUES ('Ávila'),('Alicante'),('Zamora'),('Ñuño')) t(x);"
-if ($orden -eq "Alicante < Ávila < Ñuño < Zamora") { Bien "ordenacion correcta para castellano" }
+#
+# La comparacion se hace DENTRO de PostgreSQL y solo vuelve "ok" o "no": ni la consulta que va ni el
+# resultado que viene llevan una sola letra acentuada. Entre psql y PowerShell hay dos conversiones
+# de codificacion -la pagina de codigos de la consola al leer la salida, y la del propio guion al
+# leerse a si mismo si se guardo sin BOM- y cualquiera de las dos basta para que "Avila" con tilde
+# deje de coincidir consigo mismo y el aviso salte con una ordenacion que en realidad era correcta.
+# Las mayusculas y minusculas acentuadas van escritas con escapes U&'\00C1' de SQL, que son ASCII.
+$sqlOrden = "SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES " +
+            "(U&'\00C1vila'),('Alicante'),('Zamora'),(U&'\00D1u\00F1o')) t(x)) = " +
+            "U&'Alicante|\00C1vila|\00D1u\00F1o|Zamora' THEN 'ok' ELSE 'no' END;"
+
+if ((PsqlValor -Base $Bd -Consulta $sqlOrden) -eq "ok") { Bien "ordenacion correcta para castellano" }
 else {
-    Aviso "ordenacion dudosa: $orden"
+    $intercalacion = PsqlValor -Consulta "SELECT datcollate FROM pg_database WHERE datname = '$Bd';"
+    Aviso "ordenacion dudosa: la base esta creada con la intercalacion $intercalacion"
     Aviso "los listados saldran con los acentos fuera de sitio (guia 01, 3.2)"
 }
 
@@ -756,6 +780,88 @@ else {
     PsqlSuper -Base $Bd -Argumentos @(
         "-q", "-v", "clave_owner=$ClaveOwner", "-v", "clave_api=$ClaveApi", "-v", "bd=$Bd", "-f", $sqlRoles)
     Bien "judo_owner y judo_api listos"
+}
+
+# Objetos que ya estaban ahi y no son de judo_owner.
+#
+# Pasa siempre que se reutiliza una base de datos anterior: las tablas las creo otra cuenta -la
+# personal, o el propio postgres de una instalacion vieja- y, aunque el paso 3 ponga la BASE a
+# nombre de judo_owner, los objetos de dentro siguen siendo del otro. El primer arranque del paso 7
+# se cae entonces con un error que no dice de donde viene:
+#
+#     SqlState: 42501   MessageText: must be owner of table paises
+#
+# Reasignarlos NO toca los datos, solo quien consta como dueno. Y se hace objeto a objeto y no con
+# REASSIGN OWNED, que ademas de la base actual arrastra los objetos COMPARTIDOS del cluster: si la
+# cuenta que los creo es superusuario, se llevaria por delante la propiedad de postgres, template0 y
+# template1.
+$consultaAjenos = "SELECT count(*) FROM (" +
+    "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+     "WHERE n.nspname = 'public' AND c.relkind IN ('r','p','S','v','m','f') " +
+       "AND c.relowner <> 'judo_owner'::regrole " +
+    "UNION ALL " +
+    "SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace " +
+     "WHERE n.nspname = 'public' AND p.proowner <> 'judo_owner'::regrole) t;"
+
+$ajenos = [int](PsqlValor -Base $Bd -Consulta $consultaAjenos)
+
+if ($ajenos -gt 0) {
+    # Por archivo y no con -c: lleva bloques DO $$ ... $$ y comillas simples a varios niveles, y la
+    # linea de comandos de Windows no es sitio para eso (ver el comentario del paso 3).
+    $sqlDuenos = Join-Path $env:TEMP "judo-duenos.sql"
+    Set-Content -Path $sqlDuenos -Encoding ascii -Value @'
+BEGIN;
+ALTER SCHEMA public OWNER TO judo_owner;
+
+DO $$
+DECLARE r record;
+BEGIN
+    -- Tablas y vistas primero: las secuencias de columnas serial cambian de dueno con su tabla y
+    -- no se pueden cambiar por separado ("cannot change owner of sequence ... is linked to table").
+    FOR r IN SELECT c.oid::regclass AS obj, c.relkind AS k
+             FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+             WHERE ns.nspname = 'public' AND c.relowner <> 'judo_owner'::regrole
+               AND c.relkind IN ('r','p','v','m','f')
+    LOOP
+        EXECUTE format(CASE r.k
+            WHEN 'v' THEN 'ALTER VIEW %s OWNER TO judo_owner'
+            WHEN 'm' THEN 'ALTER MATERIALIZED VIEW %s OWNER TO judo_owner'
+            ELSE            'ALTER TABLE %s OWNER TO judo_owner' END, r.obj);
+    END LOOP;
+
+    -- Y ahora las secuencias que hayan quedado sueltas, sin tabla que las arrastre.
+    FOR r IN SELECT c.oid::regclass AS obj
+             FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+             WHERE ns.nspname = 'public' AND c.relkind = 'S'
+               AND c.relowner <> 'judo_owner'::regrole
+               AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                               WHERE d.objid = c.oid AND d.deptype IN ('a','i'))
+    LOOP
+        EXECUTE format('ALTER SEQUENCE %s OWNER TO judo_owner', r.obj);
+    END LOOP;
+
+    FOR r IN SELECT p.oid::regprocedure AS obj, p.prokind AS k
+             FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'public' AND p.proowner <> 'judo_owner'::regrole
+    LOOP
+        EXECUTE format(CASE r.k
+            WHEN 'p' THEN 'ALTER PROCEDURE %s OWNER TO judo_owner'
+            WHEN 'a' THEN 'ALTER AGGREGATE %s OWNER TO judo_owner'
+            ELSE            'ALTER FUNCTION %s OWNER TO judo_owner' END, r.obj);
+    END LOOP;
+END $$;
+COMMIT;
+'@
+    try {
+        PsqlSuper -Base $Bd -Argumentos @("-q", "-f", $sqlDuenos)
+    }
+    finally {
+        Remove-Item $sqlDuenos -Force -ErrorAction SilentlyContinue
+    }
+    Bien "$ajenos objetos que eran de otra cuenta pasan a judo_owner (los datos no se tocan)"
+}
+else {
+    Bien "todo el esquema es de judo_owner"
 }
 
 $extensiones = PsqlValor -Base $Bd -Consulta "SELECT string_agg(extname, ', ' ORDER BY extname) FROM pg_extension WHERE extname IN ('unaccent','pgcrypto');"

@@ -287,18 +287,27 @@ Comprobar la codificación y la ordenación:
 psql -U postgres -l
 ```
 
-Debe mostrar `UTF8` y un *Collate* que acabe en `.UTF-8` (`es_ES.UTF-8`, `en_US.UTF-8`… cualquiera
-sirve; el equipo de desarrollo usa `en_US.UTF-8`). Si aparece `C` o `POSIX`, los listados saldrán
-ordenados de forma extraña, con los apellidos acentuados al final. Verificación directa:
+Debe mostrar `UTF8` y un *Collate* con un idioma dentro: en macOS y Linux acaba en `.UTF-8`
+(`es_ES.UTF-8`, `en_US.UTF-8`… cualquiera sirve; el equipo de desarrollo usa `en_US.UTF-8`) y en
+Windows tiene la forma `Spanish_Spain.1252` o `es-ES`, que **también son correctas**: en Windows la
+ordenación no depende de la página de códigos que aparece en el nombre. Lo único que está mal es
+`C` o `POSIX`: con esa, los listados salen con los apellidos acentuados todos al final.
+Verificación directa:
 
 ```bash
 psql -U postgres -d JudoAdministracion -tAc \
-  "SELECT string_agg(x, ' < ' ORDER BY x) FROM (VALUES ('Ávila'),('Alicante'),('Zamora'),('Ñuño')) t(x);"
+  "SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES (U&'\00C1vila'),('Alicante'),('Zamora'),(U&'\00D1u\00F1o')) t(x)) = U&'Alicante|\00C1vila|\00D1u\00F1o|Zamora' THEN 'ok' ELSE 'no' END;"
 ```
 
-Correcto: `Alicante < Ávila < Ñuño < Zamora`. Si sale `Alicante < Zamora < Ávila < Ñuño`, la
-ordenación es `C` y hay que recrear la base de datos con `LC_COLLATE` adecuado (se hace ahora sin
-coste; después obligaría a volcar y restaurar).
+Correcto: `ok`. Si sale `no`, la ordenación es `C` y hay que recrear la base de datos con
+`LC_COLLATE` adecuado (se hace ahora sin coste; después obligaría a volcar y restaurar).
+
+La consulta va escrita con escapes `U&'\00C1'`, que son las mismas letras acentuadas pero en ASCII,
+y responde `ok`/`no` en lugar del listado. No es un capricho: la consola de Windows trabaja en su
+página de códigos (850 o 437) mientras que PostgreSQL devuelve UTF-8, así que un `Ávila` que
+viaje entero por ahí se ve como `├üvila` y una comparación hecha fuera del servidor falla aunque la
+ordenación sea perfecta. Preguntando dentro del servidor y respondiendo en ASCII no hay nada que
+se pueda estropear por el camino. Si aun así se quiere ver el listado, primero `chcp 65001`.
 
 ### 3.3 Roles de PostgreSQL
 
