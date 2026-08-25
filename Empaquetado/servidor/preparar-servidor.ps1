@@ -495,15 +495,32 @@ if ($Deshacer) {
 
     Paso "5/8  Archivo hosts"
 
-    if (-not (Test-Path $hosts) -or
-        -not (Get-Content $hosts | Where-Object { $_ -like "*$marcaHosts*" })) {
+    # El archivo se lee UNA vez y entero: asi no queda ningun lector abierto sobre el hosts cuando
+    # llega el momento de escribirlo.
+    $lineasHosts = if (Test-Path $hosts) { @(Get-Content -Path $hosts -ErrorAction SilentlyContinue) }
+                   else                  { @() }
+
+    if (-not ($lineasHosts | Where-Object { $_ -like "*$marcaHosts*" })) {
         Igual "no habia ninguna linea de JudoAdministracion en el hosts"
     } elseif ($Simular) {
         Write-Host "   [simulado] quitaria del hosts las lineas marcadas con $marcaHosts" -ForegroundColor Yellow
     } else {
-        $limpio = Get-Content $hosts | Where-Object { $_ -notlike "*$marcaHosts*" }
-        Set-Content -Path $hosts -Value $limpio -Encoding ASCII
-        Bien "linea de $Nombre quitada del hosts"
+        # Aqui NO vale Set-Content. El proveedor de archivos de PowerShell 5.1 abre el hosts en modo
+        # solo escritura y aun asi intenta leerlo para escribirlo, y en el hosts -que es un archivo
+        # del sistema- eso acaba en "No se puede leer la secuencia" (GetContentWriterArgumentError)
+        # sin haber escrito nada. WriteAllLines escribe el archivo de una vez, con .NET, sin pasar
+        # por el proveedor.
+        $limpio = [string[]]@($lineasHosts | Where-Object { $_ -notlike "*$marcaHosts*" })
+
+        if (HacerD { [System.IO.File]::WriteAllLines($hosts, $limpio, [System.Text.Encoding]::ASCII) }) {
+            Bien "linea de $Nombre quitada del hosts"
+        } else {
+            # Una linea de sobra en el hosts no deja nada roto -apunta a un nombre que ya no
+            # responde-, y desde luego no es motivo para dejar la desinstalacion a medias. Se dice
+            # como quitarla y se sigue con el cortafuegos y la carpeta del servicio.
+            Aviso "no he podido escribir en $hosts. Abrelo como administrador y quita la linea"
+            Aviso "  que termina en `"$marcaHosts`""
+        }
     }
 
     # ── 6. Cortafuegos ────────────────────────────────────────────────────────────────────────────
