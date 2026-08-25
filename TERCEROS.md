@@ -102,6 +102,11 @@ Términos oficiales: <https://www.questpdf.com/license/>
 | `Assets/Icons/judo.*` | Iconos propios del proyecto, cubiertos por la licencia MIT |
 | `Assets/PdfTemplates/*.pdf` | Plantillas de cuadros de combate del proyecto |
 | `Assets/Images/Logo_Federacion_*.png`, `Copas_FVJ.png` | **Marcas de terceros.** Propiedad de sus respectivas federaciones; la licencia MIT no otorga derechos sobre ellas |
+| `Assets/Images/logo.png` | El logo que usan los informes y la pantalla de inicio mientras nadie ponga otro. Hoy es una copia del de la Federación Valenciana, así que **es también marca de un tercero** |
+| `Assets/Flags/*.png` | Banderas de países, comunidades y clubes. Las de club son marcas de sus clubes |
 | `Assets/Images/Mat*.png` | Ilustraciones de tatami del proyecto |
 
 Quien reutilice este código en otro contexto debe **retirar o sustituir los logotipos federativos**.
+No hace falta recompilar para ello: basta con sustituir `logo.png` (y, si se quiere pie de
+patrocinadores, poner `sponsors.png`) en la carpeta de imágenes del equipo, que se explica en la
+[guía de instalación, §3.10](Documentación/01-Guía-de-Instalación.md).

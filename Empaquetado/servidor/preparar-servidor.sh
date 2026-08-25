@@ -34,6 +34,9 @@ BD="JudoAdministracion"
 NOMBRE_SERVIDOR="judo-server"
 IP_SERVIDOR="192.168.2.3"
 DIR_SERVICIO="/opt/judoadministracion-api"
+# Imágenes que se pueden sustituir sin recompilar (logo, pie de patrocinadores, banderas).
+# La misma ruta que resuelve CarpetaAssets en el código.
+CARPETA_ASSETS="/opt/judoadministracion-assets"
 DIR_APP=""
 SUPERUSUARIO="postgres"
 PUERTO=8443
@@ -215,9 +218,10 @@ confirmar() {
 # lo que quería, tr muere con SIGPIPE y, con pipefail activado, el guion entero se va al suelo.
 generar_clave() { openssl rand -hex 16; }           # 32 caracteres, 128 bits
 
-# Escribe donde haga falta, con sudo solo si el destino no es escribible. El guion NO se ejecuta
-# entero como root a propósito: en macOS con Homebrew, PostgreSQL responde al usuario que ha iniciado
-# sesión y no a root, así que elevar todo rompería psql.
+# Escribe donde haga falta, con sudo solo si el destino no es escribible. Así el guion sirve tanto
+# lanzado con sudo (lo normal, porque /opt y /etc/hosts lo piden) como sin él en un equipo donde la
+# carpeta del servicio ya sea del usuario. Lo que en macOS NO puede ir como root —Homebrew y el psql
+# que instala— baja de identidad por su cuenta; ver "Homebrew y el usuario que ha iniciado sesión".
 escribir() {                                        # escribir <ruta> < contenido por la entrada
     local destino="$1" carpeta
     carpeta="$(dirname "$destino")"
@@ -234,6 +238,89 @@ permisos() { chmod "$@" 2>/dev/null || sudo chmod "$@"; }
 NECESITA_ROOT=0
 como_root() { if [[ $NECESITA_ROOT -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
 
+# ── Homebrew y el usuario que ha iniciado sesión ──────────────────────────────────────────────────
+#
+# El guion se lanza con sudo porque hace falta para /opt, /etc/hosts y el LaunchDaemon. Pero hay dos
+# cosas que NO se pueden hacer como root en macOS:
+#
+#   · Homebrew se niega en seco ("Running Homebrew as root is extremely dangerous"): no baja
+#     privilegios, así que los guiones de compilación de las fórmulas acabarían con acceso total al
+#     equipo. No es un aviso que se pueda saltar.
+#   · El PostgreSQL de Homebrew responde al usuario que ha iniciado sesión —el superusuario del
+#     clúster es él, no "postgres" ni "root"—, y sus servicios viven en el launchd de ese usuario.
+#
+# Así que todo lo que sea brew, y el psql que instala, va con la identidad de ese usuario.
+USUARIO_SESION="${SUDO_USER:-$(id -un)}"
+SOY_ROOT=0; [[ "$(id -u)" -eq 0 ]] && SOY_ROOT=1
+
+como_usuario() {                                    # como_usuario <orden> [argumentos...]
+    if [[ $SOY_ROOT -eq 1 && "$USUARIO_SESION" != "root" ]]; then
+        sudo -u "$USUARIO_SESION" -H "$@"
+    else
+        "$@"
+    fi
+}
+
+# "brew services" tiene que hablar con el launchd del usuario, y a ése no se llega con un simple
+# "sudo -u" desde una sesión de root: hay que entrar en su contexto con "launchctl asuser".
+en_sesion() {                                       # en_sesion <orden> [argumentos...]
+    if [[ $SOY_ROOT -eq 1 && "$USUARIO_SESION" != "root" && "$SISTEMA" == "Darwin" ]]; then
+        launchctl asuser "$(id -u "$USUARIO_SESION")" sudo -u "$USUARIO_SESION" -H "$@"
+    else
+        como_usuario "$@"
+    fi
+}
+
+# brew no está en el PATH de root, así que se busca donde lo deja el instalador oficial: Apple
+# Silicon primero, Intel después.
+BREW=""
+localizar_brew() {
+    [[ -n "$BREW" ]] && return 0
+    local candidato
+    for candidato in "$(command -v brew 2>/dev/null || true)" \
+                     "/opt/homebrew/bin/brew" \
+                     "/usr/local/bin/brew" \
+                     "$(eval echo "~$USUARIO_SESION")/homebrew/bin/brew"; do
+        [[ -n "$candidato" && -x "$candidato" ]] || continue
+        BREW="$candidato"
+        return 0
+    done
+    return 1
+}
+
+# "brew services" es el único que necesita el launchd del usuario; el resto de órdenes de brew van
+# con un sudo -u normal, que tiene menos cosas que puedan salir mal.
+brew_usuario() {
+    localizar_brew || return 1
+    if [[ "${1:-}" == "services" ]]; then
+        en_sesion "$BREW" "$@"
+    else
+        como_usuario "$BREW" "$@"
+    fi
+}
+
+# La fórmula postgresql@N de Homebrew es "keg-only": psql no queda enlazado ni en el PATH del
+# usuario, y menos en el de root. Se busca en las carpetas donde lo deja Homebrew, de la versión más
+# alta a la más baja, y se añade al PATH del guion.
+BIN_PG=""
+localizar_pg() {
+    [[ -n "$BIN_PG" ]] && return 0
+    command -v psql >/dev/null && return 0
+    [[ "$SISTEMA" == "Darwin" ]] || return 1
+
+    local prefijo carpeta
+    prefijo="$(brew_usuario --prefix 2>/dev/null || true)"
+    [[ -n "$prefijo" ]] || return 1
+
+    while read -r carpeta; do
+        [[ -x "$carpeta/psql" ]] || continue
+        BIN_PG="$carpeta"
+        export PATH="$BIN_PG:$PATH"
+        return 0
+    done < <(ls -d "$prefijo"/opt/postgresql@*/bin 2>/dev/null | sort -t@ -k2 -rn)
+    return 1
+}
+
 # Leer un valor de un appsettings.Local.json ya escrito. No hace falta un analizador de JSON: los
 # archivos que lee esto son los que escribe este mismo guion, con una propiedad por línea.
 leer_json() {                                       # leer_json <archivo> <propiedad>
@@ -245,9 +332,14 @@ leer_json() {                                       # leer_json <archivo> <propi
 # Tres formas según el sistema, resueltas una vez:
 #   · psql -U postgres          instalador de EDB, Postgres.app, o un clúster con ese rol
 #   · sudo -u postgres psql     Linux con autenticación "peer", que es lo habitual en apt
-#   · psql                      Homebrew en macOS, donde el superusuario es el propio usuario
+#   · psql                      Homebrew en macOS cuando el guion NO va con sudo: el superusuario
+#                               es el propio usuario
+#   · como el usuario de la sesión   Homebrew en macOS con el guion lanzado con sudo: root no es
+#                               ningún rol del clúster, así que se pregunta con la identidad de quien
+#                               instaló PostgreSQL
 MODO_PSQL=""
 resolver_psql() {
+    localizar_pg || true
     if psql -U "$SUPERUSUARIO" -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
         MODO_PSQL="usuario"
     elif sudo -n -u "$SUPERUSUARIO" psql -d postgres -tAc 'SELECT 1' >/dev/null 2>&1 \
@@ -255,6 +347,9 @@ resolver_psql() {
         MODO_PSQL="sudo"
     elif psql -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
         MODO_PSQL="local"
+    elif [[ $SOY_ROOT -eq 1 ]] \
+      && como_usuario "${BIN_PG:+$BIN_PG/}psql" -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+        MODO_PSQL="sesion"
     else
         return 1
     fi
@@ -265,6 +360,7 @@ psql_super() {
         usuario) psql -U "$SUPERUSUARIO" "$@" ;;
         sudo)    sudo -u "$SUPERUSUARIO" psql "$@" ;;
         local)   psql "$@" ;;
+        sesion)  como_usuario "${BIN_PG:+$BIN_PG/}psql" "$@" ;;
     esac
 }
 
@@ -353,7 +449,8 @@ parar_lo_que_escuche() {
 volcar_base_datos() {
     local destino="$HOGAR/judo-volcado-antes-de-desinstalar-$(date +%Y%m%d-%H%M%S).dump"
 
-    if ! command -v pg_dump >/dev/null; then
+    localizar_pg || true
+    if ! command -v pg_dump >/dev/null && [[ ! -x "${BIN_PG:-/dev/null}/pg_dump" ]]; then
         aviso "no encuentro pg_dump: NO hay volcado, y la base de datos se va a borrar igual"
         return 0
     fi
@@ -388,6 +485,7 @@ pg_dump_super() {
         usuario) pg_dump -U "$SUPERUSUARIO" -Fc -f "$2" "$1" ;;
         sudo)    sudo -u "$SUPERUSUARIO" pg_dump -Fc -f "$2" "$1" ;;
         local)   pg_dump -Fc -f "$2" "$1" ;;
+        sesion)  como_usuario "${BIN_PG:+$BIN_PG/}pg_dump" -Fc -f "$2" "$1" ;;
     esac
 }
 
@@ -476,18 +574,18 @@ desinstalar_postgresql() {
     fi
 
     if [[ "$SISTEMA" == "Darwin" ]]; then
-        command -v brew >/dev/null || { aviso "no hay Homebrew: desinstala PostgreSQL a mano"; return 0; }
+        localizar_brew || { aviso "no hay Homebrew: desinstala PostgreSQL a mano"; return 0; }
 
         local formula
-        formula="$(brew list --formula 2>/dev/null | grep '^postgresql@' | sort -t@ -k2 -n | tail -1 || true)"
+        formula="$(brew_usuario list --formula 2>/dev/null | grep '^postgresql@' | sort -t@ -k2 -n | tail -1 || true)"
 
         if [[ -z "$formula" ]]; then
             aviso "PostgreSQL no lo puso Homebrew: desinstálalo por donde lo instalaste"
             return 0
         fi
 
-        hacer_callado brew services stop "$formula"
-        hacer brew uninstall "$formula"
+        hacer_callado brew_usuario services stop "$formula"
+        hacer brew_usuario uninstall "$formula"
         resultado "$formula desinstalado"
 
     elif command -v apt-get >/dev/null; then
@@ -601,7 +699,7 @@ quitar_cortafuegos() {
 borrar_carpetas() {
     local carpeta
     for carpeta in "$DIR_SERVICIO" "$DIR_SERVICIO.anterior" "$DIR_SERVICIO.nuevo" \
-                   "/opt/judoadministracion-copias"
+                   "/opt/judoadministracion-copias" "$CARPETA_ASSETS"
     do
         if [[ -d "$carpeta" ]]; then
             hacer sudo rm -rf "$carpeta"
@@ -813,11 +911,20 @@ paso "2/10  PostgreSQL"
 
 instalar_postgresql() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
-        command -v brew >/dev/null || fallo "No hay Homebrew. Instala PostgreSQL a mano (guía §3.1)."
-        brew install postgresql@18
-        brew services start postgresql@18
-        aviso "añade a tu perfil: export PATH=\"\$(brew --prefix)/opt/postgresql@18/bin:\$PATH\""
-        export PATH="$(brew --prefix)/opt/postgresql@18/bin:$PATH"
+        localizar_brew || fallo "No hay Homebrew. Instálalo desde https://brew.sh SIN sudo (como tu
+     usuario normal) y vuelve a lanzar el guion, o pon PostgreSQL a mano (guía §3.1)."
+
+        # Como el usuario de la sesión, no como root: brew se niega a trabajar como root, y además el
+        # clúster tiene que pertenecer a quien lo va a usar.
+        [[ $SOY_ROOT -eq 1 ]] && aviso "brew se ejecutará como $USUARIO_SESION (no admite root)"
+        brew_usuario install postgresql@18
+        brew_usuario services start postgresql@18
+
+        local prefijo
+        prefijo="$(brew_usuario --prefix)"
+        aviso "añade al perfil de $USUARIO_SESION: export PATH=\"$prefijo/opt/postgresql@18/bin:\$PATH\""
+        BIN_PG="$prefijo/opt/postgresql@18/bin"
+        export PATH="$BIN_PG:$PATH"
     elif command -v apt-get >/dev/null; then
         sudo apt-get update
         # postgresql-contrib NO es opcional: trae unaccent y pgcrypto.
@@ -831,6 +938,10 @@ instalar_postgresql() {
         fallo "No sé instalar PostgreSQL en este sistema. Hazlo a mano (guía §3.1)."
     fi
 }
+
+# En macOS con Homebrew, psql no está en el PATH (fórmula keg-only) y menos en el de root: antes de
+# darlo por no instalado, se busca donde lo deja Homebrew.
+localizar_pg || true
 
 if ! command -v psql >/dev/null; then
     if [[ $SIN_POSTGRESQL -eq 1 ]]; then
@@ -847,6 +958,15 @@ resolver_psql || fallo "PostgreSQL está instalado pero no responde.
 
 VERSION_PG="$(psql_super -d postgres -tAc 'SHOW server_version;' | cut -d. -f1)"
 bien "PostgreSQL $VERSION_PG en marcha (psql: modo $MODO_PSQL)"
+
+# El PostgreSQL de Homebrew arranca con el launchd del usuario, no con el del sistema: al encender el
+# equipo no sube hasta que ese usuario inicia sesión. El servicio de la API sí arranca antes, así que
+# la primera conexión puede fallar y reintentar. En un servidor de competición conviene dejar el
+# inicio de sesión automático de ese usuario, o pasar PostgreSQL a demonio del sistema.
+if [[ "$MODO_PSQL" == "sesion" ]]; then
+    aviso "PostgreSQL pertenece a $USUARIO_SESION y arranca al iniciar SU sesión"
+    aviso "en el servidor, deja el inicio de sesión automático de $USUARIO_SESION (Ajustes → Usuarios)"
+fi
 
 if [[ "$VERSION_PG" -lt 13 ]]; then
     aviso "versión anterior a la 13: las extensiones las creará el superusuario (ya se hace así)"
@@ -1119,6 +1239,28 @@ else
     CLAVE_TOKENS="$(openssl rand -base64 48 | tr -d '\n')"
     escribir_configuracion judo_owner "$CLAVE_OWNER" true
     bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
+fi
+
+# La carpeta de imágenes que se puede tocar en este equipo: el logo de la federación, el pie de
+# patrocinadores de los informes y las banderas de clubes, comunidades y países. La aplicación la
+# siembra sola con lo que trae dentro la primera vez que genera un informe, pero solo puede hacerlo si
+# existe y puede escribir en ella: el servicio corre como un usuario normal y /opt es de root.
+#
+# Va FUERA de la carpeta del servicio a propósito. Al actualizar, esa se sustituye entera por la
+# versión nueva (ver Services/Actualizacion/ActualizadorApi), y con las imágenes dentro se llevaría por
+# delante el logo que haya puesto la federación.
+if [[ -d "$CARPETA_ASSETS" ]]; then
+    igual "la carpeta de imágenes ya existe: $CARPETA_ASSETS"
+else
+    if sudo mkdir -p "$CARPETA_ASSETS" 2>/dev/null; then
+        sudo chown "${SUDO_USER:-$(id -un)}" "$CARPETA_ASSETS"
+        bien "creada la carpeta de imágenes: $CARPETA_ASSETS"
+        bien "  ahí se dejan logo.png y sponsors.png para cambiarlos sin reinstalar nada"
+    else
+        # No es motivo para parar la instalación: sin carpeta, los informes usan las imágenes que la
+        # aplicación lleva dentro, que es como se ha comportado siempre.
+        aviso "no he podido crear $CARPETA_ASSETS; los informes usarán las imágenes de fábrica"
+    fi
 fi
 
 # ── 7. Esquema, datos básicos y disparadores ───────────────────────────────────────────────────────

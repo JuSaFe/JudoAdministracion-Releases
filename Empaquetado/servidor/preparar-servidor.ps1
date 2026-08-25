@@ -575,7 +575,8 @@ if ($Deshacer) {
     Paso "8/8  Carpetas"
 
     $carpetas = @($Dir, "$Dir.anterior", "$Dir.nuevo",
-                  (Join-Path $env:ProgramData "JudoAdministracion\Copias"))
+                  (Join-Path $env:ProgramData "JudoAdministracion\Copias"),
+                  (Join-Path $env:ProgramData "JudoAdministracion\Assets"))
 
     foreach ($carpeta in $carpetas) {
         if (Test-Path $carpeta) {
@@ -997,6 +998,50 @@ else {
 
     EscribirConfiguracion -Usuario "judo_owner" -Clave $ClaveOwner -Inicializar $true
     Bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
+}
+
+# La carpeta de imagenes que se puede tocar en este equipo: el logo de la federacion, el pie de
+# patrocinadores de los informes y las banderas de clubes, comunidades y paises. La aplicacion la
+# siembra sola con lo que trae dentro la primera vez que genera un informe; aqui solo se crea, para
+# que este a la vista desde el primer momento y no aparezca a mitad de competicion.
+#
+# Va FUERA de la carpeta del programa a proposito. Al actualizar, el instalador sobrescribe esa
+# carpeta entera y se llevaria por delante el logo que haya puesto la federacion.
+$carpetaAssets = Join-Path $env:ProgramData "JudoAdministracion\Assets"
+
+if (Test-Path $carpetaAssets) {
+    Igual "la carpeta de imagenes ya existe: $carpetaAssets"
+} else {
+    try {
+        New-Item -ItemType Directory -Path $carpetaAssets -Force | Out-Null
+        Bien "creada la carpeta de imagenes: $carpetaAssets"
+        Bien "  ahi se dejan logo.png y sponsors.png para cambiarlos sin reinstalar nada"
+    } catch {
+        # No es motivo para parar la instalacion: sin carpeta, los informes usan las imagenes que la
+        # aplicacion lleva dentro, que es como se ha comportado siempre.
+        Aviso "no he podido crear $carpetaAssets; los informes usaran las imagenes de fabrica"
+    }
+}
+
+# Permiso de modificacion para los usuarios normales, y esto NO es opcional.
+#
+# En esta carpeta escriben dos procesos con identidades distintas: el servicio, que corre como SYSTEM
+# y es quien la siembra al arrancar, y la aplicacion de escritorio, que corre como el usuario que ha
+# iniciado sesion y es la que actualiza las banderas y guarda el logo. Con los permisos que trae
+# ProgramData por omision, un usuario normal puede crear archivos suyos pero NO sobrescribir los que
+# dejo SYSTEM, asi que "Actualizar banderas" fallaria archivo por archivo sin que se vea por que.
+#
+# Se aplica exista o no la carpeta: una instalacion anterior a esto la tiene sin el permiso.
+# S-1-5-32-545 es el grupo "Usuarios" por su SID, que es el mismo en cualquier idioma de Windows;
+# por su nombre fallaria en un Windows en ingles.
+if (Test-Path $carpetaAssets) {
+    try {
+        & icacls $carpetaAssets /grant '*S-1-5-32-545:(OI)(CI)M' /T /C | Out-Null
+        if ($LASTEXITCODE -eq 0) { Bien "permiso de escritura para los usuarios en la carpeta de imagenes" }
+        else { Aviso "icacls ha devuelto $LASTEXITCODE al dar permisos sobre $carpetaAssets" }
+    } catch {
+        Aviso "no he podido dar permiso de escritura sobre $carpetaAssets; actualizar banderas desde la aplicacion podria fallar"
+    }
 }
 
 # ── 7. Esquema, datos básicos y disparadores ───────────────────────────────────────────────────────

@@ -214,9 +214,24 @@ $env:Path += ";C:\Program Files\PostgreSQL\18\bin"
 
 ```bash
 brew install postgresql@18
-brew services start postgresql@18           # arranque automático al encender
+brew services start postgresql@18           # arranque al iniciar sesión este usuario
 echo 'export PATH="/opt/homebrew/opt/postgresql@18/bin:$PATH"' >> ~/.zprofile
 ```
+
+> **Homebrew se instala SIN `sudo`**, con el usuario normal, tal como dice
+> [brew.sh](https://brew.sh) (el instalador pide la contraseña de administrador él solo cuando la
+> necesita; eso es lo esperado). `sudo brew …` no funciona: Homebrew se niega con *«Running Homebrew
+> as root is extremely dangerous»* porque no baja privilegios y las fórmulas acabarían compilando
+> con acceso total al equipo. Si ya se instaló como root, se desinstala y se vuelve a instalar
+> normal.
+>
+> `preparar-servidor.sh` sí se lanza con `sudo` —lo necesita para `/opt`, `/etc/hosts` y el
+> LaunchDaemon—, y las órdenes de `brew` las ejecuta él solo con la identidad del usuario que
+> inició la sesión.
+>
+> Como el clúster de Homebrew arranca con el `launchd` de ese usuario y no con el del sistema,
+> PostgreSQL no sube hasta que ese usuario inicia sesión. En el servidor de competición conviene
+> dejar activado el inicio de sesión automático (Ajustes del Sistema → Usuarios y grupos).
 
 (Alternativa sin terminal: [Postgres.app](https://postgresapp.com/), que trae `contrib` incluido.)
 
@@ -658,6 +673,47 @@ conviene al menos borrar el historial (`history -c`) al terminar.
 
 ---
 
+### 3.10 Imágenes de los informes: logo, patrocinadores y banderas
+
+Los PDF llevan tres cosas que cambian de una federación a otra y que **no hace falta recompilar para
+cambiar**: el logo de la cabecera, la tira de patrocinadores del pie y las banderas de clubes,
+comunidades y países. Todas salen de una carpeta del servidor:
+
+| Sistema | Carpeta |
+|---|---|
+| Linux y macOS | `/opt/judoadministracion-assets` |
+| Windows | `C:\ProgramData\JudoAdministracion\Assets` |
+
+La crea `preparar-servidor` (paso 6) y **la aplicación la rellena sola** con lo que trae dentro la
+primera vez que genera un informe: `Images/logo.png` y todas las banderas conocidas en `Flags/`,
+más un `LEEME.txt` que explica lo mismo que esta sección. La variable de entorno `JUDO_ASSETS` la
+lleva a otro sitio, si hiciera falta.
+
+| Archivo | Qué es |
+|---|---|
+| `Images/logo.png` | El logo que encabeza **todos** los informes, los cuadros de combates y la pantalla de inicio de sesión |
+| `Images/sponsors.png` | La tira de patrocinadores del pie. **No viene ninguna**: mientras no se deje ahí, los informes se imprimen sin pie |
+| `Flags/ESP.png`, `Flags/ESP_VAL.png`, `Flags/ESP_VAL_ALC.png`… | Banderas por código, de lo más general a lo más concreto. Se usa la más concreta que exista, así que un club sin escudo propio sale con la bandera de su comunidad. Se actualizan solas y aparte de la aplicación (§7.5) |
+
+Todo son **PNG**. Lo que hay en la carpeta manda sobre lo que la aplicación trae dentro, y **borrar
+un archivo devuelve el de fábrica**: no hay forma de dejar la instalación sin logo por equivocarse
+de archivo. El cambio se ve en el siguiente informe que se genere, sin reiniciar el servicio.
+
+La tira de patrocinadores conviene guardarla a **1280 × 75 píxeles**. Cualquier otro tamaño vale —se
+ajusta al ancho de la hoja sin deformarse, y nunca pasa de 75 puntos de alto—, pero con esas medidas
+sale nítida al imprimir y ocupa el ancho entero sin márgenes a los lados.
+
+La carpeta va **fuera** de la del servicio a propósito: al actualizar, esa se sustituye entera por la
+versión nueva y se llevaría por delante lo que hubiera puesto la federación. Al desinstalar con
+`--deshacer` sí se borra, como el resto de lo que crea la instalación.
+
+> **Un evento puede llevar los suyos.** En el formulario del evento (*Eventos → Editar → Imágenes de
+> los informes*) se cargan un logo y un pie **propios de esa competición**, que mandan sobre los de
+> esta carpeta y se guardan en la base de datos, así que los ven todos los puestos a la vez. Se
+> quitan desde el mismo sitio, y entonces el evento vuelve a usar los de aquí.
+
+---
+
 ## 4. Instalación de un puesto de administración
 
 Repetir en cada equipo `192.168.2.5`–`.9`. Son tres pasos y hay que hacer los tres, en este orden:
@@ -1086,6 +1142,50 @@ y en macOS no pide nada.
 - **Nunca se actualiza el día de la competición.** Con una semana de margen y una prueba real entre
   medias. Si hay un evento activo o la API está dando servicio a la red, la aplicación avisa antes de
   empezar.
+
+### 7.5 Las banderas se actualizan aparte
+
+Una bandera nueva —un club que estrena escudo, un país que compite aquí por primera vez— **no es una
+versión del programa**, y no espera a que salga una. Se publican como archivos sueltos en el
+repositorio de descargas y la aplicación se las trae cuando se le pide:
+
+```
+Rueda dentada ▸ Actualización ▸ Banderas ▸ Comprobar banderas
+```
+
+Se hace **en el servidor**, y solo ahí sale la opción: es el equipo que monta los PDF y el que sirve
+las banderas a los marcadores de tatami. Las de un puesto de la red no las mira nadie.
+
+Al comprobar, cada bandera cae en uno de estos casos:
+
+| | Qué pasa al actualizar |
+|---|---|
+| **Nuevas** | Se añaden |
+| **Con una versión más reciente** | Se sustituyen. Son las que están tal cual las instaló la aplicación |
+| **Personalizadas en este equipo** | **No se tocan**, salvo que se desmarque la casilla — ver abajo |
+| **Sin cambios** | No se descargan siquiera |
+| **Solo en este equipo** | No se tocan nunca: no hay nada publicado con lo que sustituirlas |
+
+> ⚠ **Las banderas que hayas cambiado a mano.** La aplicación distingue las que has tocado de las
+> que están como venían —compara con la copia que lleva dentro—, las enumera por su nombre y ofrece
+> la casilla **«Conservar las que he cambiado a mano en este equipo»**, marcada de entrada. Con ella
+> marcada se quedan como están y el resto se actualiza igual.
+>
+> Si la desmarcas, se sustituyen por las publicadas, y entonces **pide confirmación** enseñando cuáles
+> son: guárdalas aparte antes de aceptar. Se hace además una copia automática de cada una en
+> `Banderas-sustituidas/<fecha>`, junto a la carpeta de imágenes (§3.10), y al terminar se dice dónde
+> ha quedado — pero eso es la red de seguridad: un escudo que ha dibujado alguien no se puede volver
+> a bajar de ningún sitio.
+>
+> Una bandera **que solo está aquí** —un escudo de club con un nombre que no existe en el
+> repositorio— no corre ningún riesgo en ningún caso: no se toca nunca.
+
+No hay que reiniciar nada. Los informes leen las banderas del disco cada vez que se genera uno, así
+que el cambio sale en el siguiente. Los marcadores de tatami se quedan con las suyas en memoria
+mientras están abiertos: las cogen al volver a abrirlos.
+
+Hace falta salida a Internet, como el resto de esta sección, así que también esto se hace con margen
+y no en el pabellón.
 
 ---
 
