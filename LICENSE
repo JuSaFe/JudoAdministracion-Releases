@@ -1,14 +1,30 @@
 LICENCIA DE USO DE JUDOADMINISTRACIÓN
-Versión 1.0 — 7 de agosto de 2026
+Versión 1.1 — 2 de septiembre de 2026
 
 Copyright © 2026 Juan Cotolí San Félix. Todos los derechos reservados.
 
 AVISO PREVIO
-Esta NO es una licencia de código abierto ni una licencia libre. El programa se puede
-descargar, instalar y utilizar gratuitamente y sin límite, pero su modificación y la
+Esta NO es una licencia de código abierto ni una licencia libre. Su modificación y la
 distribución de versiones modificadas están prohibidas. El código fuente se publica para
 consulta, auditoría y colaboración a través del repositorio oficial, no para su
 derivación independiente.
+
+El Programa tiene dos partes y NO se licencian igual:
+
+  · La APLICACIÓN DE ESCRITORIO —la que se instala en los puestos de trabajo— se puede
+    descargar, instalar y utilizar gratuitamente, sin límite de equipos, usuarios ni
+    tiempo, y sin pedir nada a nadie.
+
+  · El SERVICIO DE SERVIDOR —el que guarda los datos de la competición y al que se
+    conectan los puestos— requiere una Licencia de Servidor emitida por el Titular. Esa
+    licencia PUEDE SER DE PAGO y hay que solicitarla al Titular escribiendo a
+    jcotolisanfelix@gmail.com; sus condiciones y su precio, si lo hubiera, se
+    acuerdan en cada caso. Ver la cláusula 2.
+
+CAMBIO RESPECTO DE LA VERSIÓN 1.0
+La versión 1.0 de esta licencia no exigía Licencia de Servidor. Conforme a la cláusula
+13.2, ese cambio NO tiene efecto retroactivo: cada copia del Programa se rige por la
+licencia que la acompañaba cuando se obtuvo.
 
 
 1. DEFINICIONES
@@ -32,6 +48,23 @@ derivación independiente.
 1.6. «Contribución»: cualquier código, documentación, recurso o material que Usted envíe
      al Titular o al Repositorio Oficial con la intención de que se incorpore al Programa.
 
+1.7. «Aplicación de Escritorio»: la parte del Programa que se instala en los puestos de
+     trabajo y presenta la interfaz de usuario (el artefacto generado a partir del
+     proyecto JudoAdministracion).
+
+1.8. «Servicio de Servidor»: la parte del Programa que se instala en un único equipo,
+     almacena los datos de la competición y atiende a los puestos conectados a ella (el
+     artefacto generado a partir del proyecto JudoAdministracion.Api), así como cualquier
+     otro componente del Programa que cumpla esa función.
+
+1.9. «Licencia de Servidor»: la autorización, emitida por el Titular y referida a un
+     equipo determinado, que habilita la instalación y ejecución del Servicio de Servidor
+     en ese equipo. Se materializa en un archivo de licencia firmado por el Titular.
+
+1.10. «Canal de Contacto»: la dirección de correo electrónico jcotolisanfelix@gmail.com,
+      o cualquier otro medio de contacto que el Titular publique en el Repositorio Oficial
+      en sustitución o además de aquélla.
+
 
 2. CONCESIÓN DE USO
 
@@ -39,14 +72,45 @@ derivación independiente.
      revocable únicamente por incumplimiento, para:
 
      a) Descargar y obtener copias del Programa.
-     b) Instalarlo y ejecutarlo en cualquier número de equipos.
-     c) Utilizarlo sin límite de usuarios, eventos, participantes ni tiempo.
-     d) Utilizarlo para cualquier finalidad, incluidas la profesional, la comercial y la
+     b) Instalar y ejecutar la Aplicación de Escritorio en cualquier número de equipos.
+     c) Utilizar la Aplicación de Escritorio sin límite de usuarios, eventos,
+        participantes ni tiempo.
+     d) Utilizarla para cualquier finalidad, incluidas la profesional, la comercial y la
         institucional.
-     e) Acceder al código fuente y estudiarlo.
+     e) Acceder al código fuente del Programa y estudiarlo.
      f) Realizar copias de seguridad.
 
-2.2. Esta concesión no exige pago, registro, suscripción ni autorización previa alguna.
+2.2. Respecto de lo concedido en la cláusula 2.1, esta licencia no exige pago, registro,
+     suscripción ni autorización previa alguna.
+
+     EL SERVICIO DE SERVIDOR
+
+2.3. La cláusula 2.1 NO comprende la instalación ni la ejecución del Servicio de Servidor.
+     Para instalarlo y ejecutarlo en un equipo se necesita una Licencia de Servidor
+     referida a ese equipo.
+
+2.4. La Licencia de Servidor PUEDE SER DE PAGO. Sus condiciones —precio, si lo hubiera,
+     duración, número de equipos y cualquier otra— las fija el Titular y se acuerdan en
+     cada caso. El Titular no está obligado a concederla.
+
+2.5. Para solicitarla hay que dirigirse al Titular por el Canal de Contacto
+     (jcotolisanfelix@gmail.com). La solicitud requiere el código de equipo que el
+     propio Programa muestra en pantalla, que es un valor derivado del equipo y no permite
+     identificar a su titular ni a su usuario.
+
+2.6. La Licencia de Servidor se concede para el equipo o equipos que en ella se
+     identifiquen y no es transferible a otros sin autorización del Titular. Queda
+     prohibido alterar, falsificar o eludir el archivo de licencia, así como modificar el
+     Programa para no exigirlo o para aceptar licencias no emitidas por el Titular; ello
+     sin perjuicio de la prohibición general de modificación de la cláusula 4.
+
+2.7. Nada de lo dispuesto en esta cláusula limita el uso gratuito e ilimitado de la
+     Aplicación de Escritorio, ni el acceso al código fuente del Programa completo, ni el
+     derecho a estudiarlo y auditarlo.
+
+2.8. Si Usted ya venía ejecutando el Servicio de Servidor al amparo de una versión
+     anterior de esta licencia que no exigía Licencia de Servidor, puede seguir
+     haciéndolo con esa versión del Programa (cláusula 13.2).
 
 
 3. REDISTRIBUCIÓN
@@ -63,6 +127,13 @@ derivación independiente.
 
 3.2. Queda prohibido incorporar el Programa a un producto, servicio o paquete comercial
      de pago sin autorización escrita del Titular.
+
+3.3. La redistribución permitida en la cláusula 3.1 no habilita al destinatario para
+     instalar ni ejecutar el Servicio de Servidor: quien reciba una copia por esta vía
+     obtiene los derechos de la cláusula 2.1 y necesita igualmente una Licencia de
+     Servidor para esa parte. La gratuidad exigida en la cláusula 3.1.b se refiere a la
+     redistribución del Programa por parte de Usted, y no afecta a la facultad del Titular
+     de fijar las condiciones de la Licencia de Servidor conforme a la cláusula 2.4.
 
 
 4. RESTRICCIONES
@@ -218,14 +289,29 @@ ENGLISH SUMMARY (non-binding — the Spanish text above is the binding version)
 
 JudoAdministración is source-available software, NOT open source.
 
-You MAY: download, install and run it on any number of machines, for any purpose
-including commercial use, free of charge and without limits; read and study the source
-code; and redistribute the software verbatim, free of charge, with all notices intact.
+The software has two parts, licensed differently:
+
+  · The DESKTOP APPLICATION (installed on the workstations) is free of charge and
+    unlimited: any number of machines, users, events or time, for any purpose including
+    commercial use, with no registration or prior authorisation.
+
+  · The SERVER SERVICE (the one that stores the competition data and that the
+    workstations connect to) requires a Server Licence issued by the copyright holder.
+    That licence MAY BE PAID and must be requested from the copyright holder by writing
+    to jcotolisanfelix@gmail.com; its terms and price, if any, are agreed case by
+    case. See clause 2 of the binding Spanish text.
+
+  This change was introduced in version 1.1 of this licence and is not retroactive:
+  each copy of the software is governed by the licence that accompanied it (clause 13.2).
+
+You MAY also: read and study the source code of the whole program; and redistribute the
+software verbatim, free of charge, with all notices intact.
 
 You MAY NOT: modify the software or create derivative works; distribute modified
 versions; republish the source code in any repository other than the official one; keep,
-develop or promote an independent fork; reuse portions of the code in other projects; or
-remove copyright and authorship notices.
+develop or promote an independent fork; reuse portions of the code in other projects;
+remove copyright and authorship notices; or tamper with, forge or circumvent the server
+licence file.
 
 Modifications must be proposed to the official repository. A technical fork is allowed
 only to prepare such a proposal and must not be maintained as an independent project.

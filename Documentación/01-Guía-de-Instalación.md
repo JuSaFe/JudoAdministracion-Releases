@@ -91,6 +91,22 @@ el `.deb` declara como dependencias (doc 00, §7.2): `libx11-6`, `libice6`, `lib
 Ejemplo a lo largo de toda la sección: el servidor es el `192.168.2.3` y responde al nombre
 `judo-server`.
 
+> ### Hace falta licencia de servidor
+>
+> El servidor es la única parte del programa que la necesita: **los puestos no llevan ninguna** y su
+> uso es ilimitado. Puede ser de pago, y se solicita escribiendo a
+> **jcotolisanfelix@gmail.com**; sus condiciones se acuerdan en cada caso
+> ([`LICENSE`](../LICENSE), cláusulas 2.3 a 2.8).
+>
+> Lo único que hace falta para pedirla es el **código de equipo** que la aplicación enseña en la
+> pantalla de licencia de ese equipo (`JA-XXXXX-XXXXX-XXXXX-XXXXX`): un valor derivado de la máquina
+> que no dice quién la usa. Llega un archivo firmado que se carga desde esa misma pantalla, y no
+> hace falta que el servidor tenga Internet en ningún momento.
+>
+> Se puede instalar y preparar el servidor antes de tener la licencia —esta sección entera funciona
+> igual—; lo que pide la licencia es **abrir la aplicación en ese equipo**. Conviene pedirla con
+> margen y no la mañana del campeonato.
+
 ### Una sola orden
 
 Toda esta sección —de §3.1 a §3.8, más el §5— está automatizada, y **el guion viene dentro del propio
