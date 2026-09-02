@@ -199,7 +199,11 @@ PARA_PUESTOS="$HOGAR/judo-puestos"
 
 AZUL=$'\033[1;34m'; VERDE=$'\033[0;32m'; AMARILLO=$'\033[0;33m'; ROJO=$'\033[0;31m'; FIN=$'\033[0m'
 
-paso()    { echo; echo "${AZUL}── $*${FIN}"; }
+# El paso por el que va el guion. Lo guarda paso() para que la trampa de error de abajo pueda
+# decir DÓNDE se ha parado: un "línea 1174" no le sirve de nada a quien está instalando un servidor.
+PASO_ACTUAL="arranque"
+
+paso()    { PASO_ACTUAL="$*"; echo; echo "${AZUL}── $*${FIN}"; }
 bien()    { echo "   ${VERDE}✓${FIN} $*"; }
 aviso()   { echo "   ${AMARILLO}!${FIN} $*"; }
 fallo()   { echo "   ${ROJO}✗${FIN} $*" >&2; exit 1; }
@@ -210,6 +214,36 @@ confirmar() {
     read -r -p "   $1 [s/N] " respuesta
     [[ "$respuesta" =~ ^[sSyY]$ ]]
 }
+
+# Qué se dice cuando el guion se para por algo que no estaba previsto.
+#
+# Con set -e cualquier orden que devuelva error corta la ejecución ahí mismo, y hasta ahora eso
+# dejaba la pantalla en silencio: el usuario veía los pasos hasta el 5 y nada más, sin saber si el
+# servidor había quedado a medias o si podía volver a intentarlo. Puede: el guion es idempotente y
+# lo que ya está hecho se respeta, así que la respuesta correcta casi siempre es relanzarlo.
+#
+# En macOS se añade la causa más habitual, que es una autorización denegada: los pasos que tocan el
+# llavero del sistema o los demonios de arranque abren un diálogo del sistema pidiendo la contraseña
+# de administrador, y cancelarlo devuelve error.
+al_fallar() {
+    echo >&2
+    echo "${ROJO}El guion se ha parado en: $PASO_ACTUAL${FIN}" >&2
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        echo "   Si ha salido un diálogo del sistema pidiendo autorización y se ha cancelado," >&2
+        echo "   eso es lo que ha pasado. Vuelve a lanzarlo y acéptalo:" >&2
+    else
+        echo "   Vuelve a lanzarlo cuando esté resuelto:" >&2
+    fi
+    echo "     sudo ./preparar-servidor.sh" >&2
+    echo >&2
+    echo "   Es idempotente: lo que ya esté hecho se respeta y solo se completa lo que falte." >&2
+    echo >&2
+}
+# ERR y no EXIT: fallo() ya explica por su cuenta lo que no cuadra y termina con exit 1, y un exit
+# explícito NO dispara ERR, así que los errores previstos siguen contándose una sola vez. errtrace
+# para que también salte cuando lo que falla está dentro de una función.
+set -o errtrace
+trap al_fallar ERR
 
 # Contraseñas solo con letras y números: van dentro de una cadena de conexión y de un JSON, y así no
 # hay que preocuparse por comillas, punto y coma o barras.
@@ -856,12 +890,41 @@ bien "openssl y curl disponibles"
      JudoAdministracion.Api/Despliegue/ si lo ejecutas desde el repositorio."
 bien "guion de roles localizado en $SQL_ROLES"
 
-if [[ ! -x "$BINARIO" ]]; then
+if [[ ! -e "$BINARIO" ]]; then
     fallo "No encuentro el servicio en $DIR_SERVICIO.
      Descomprime ahí el paquete api-<sistema> (Documentación/00) y vuelve a ejecutar,
      o indica otra carpeta con --dir."
 fi
+
+# El archivo está, pero puede no tener el bit de ejecución: descomprimir un .zip con el Finder o con
+# unzip lo pierde, y antes eso se contaba como "no encuentro el servicio" —un mensaje que manda a
+# buscar un archivo que estaba ahí delante—.
+if [[ ! -x "$BINARIO" ]]; then
+    permisos +x "$BINARIO"
+    [[ -x "$BINARIO" ]] || fallo "El servicio está en $BINARIO pero no puedo hacerlo ejecutable.
+     Prueba:  sudo chmod +x \"$BINARIO\""
+    bien "marcado como ejecutable (venía sin el permiso, cosa de descomprimir el paquete)"
+fi
 bien "servicio encontrado en $DIR_SERVICIO"
+
+# macOS: quitar la cuarentena de Gatekeeper a la carpeta del servicio.
+#
+# Todo lo que se descarga de internet llega con el atributo com.apple.quarantine, y el paquete del
+# servicio no está firmado con un certificado de Apple (doc 00, §10). Con la marca puesta, launchd
+# NO arranca el binario: el paso 10 acaba en "el servicio no responde todavía" y en el registro
+# aparece un error de permisos que no tiene nada que ver con los permisos de archivo. Es el bloqueo
+# de Gatekeeper, y se quita una vez, aquí, para toda la carpeta.
+# Se quita sin preguntar si estaba puesta: "xattr -pr" sobre una carpeta devuelve error en cuanto UN
+# archivo no lo tiene, así que preguntar antes decía "no está en cuarentena" en una carpeta que lo
+# estaba a medias. Quitarla donde no está no hace nada.
+if [[ "$SISTEMA" == "Darwin" ]] && command -v xattr >/dev/null; then
+    if sudo xattr -dr com.apple.quarantine "$DIR_SERVICIO" 2>/dev/null; then
+        bien "sin la cuarentena de Gatekeeper: launchd podrá arrancar el servicio"
+    else
+        aviso "no he podido quitar la cuarentena de Gatekeeper; si el servicio no arranca:"
+        aviso "  sudo xattr -dr com.apple.quarantine $DIR_SERVICIO"
+    fi
+fi
 
 # La aplicación de escritorio busca el servicio en /opt/judoadministracion-api por defecto para
 # arrancarlo ella sola (Services/Servidor/ServicioApiLocal.LocalizarBinario; ver doc 00, §8.1). Si
@@ -1179,23 +1242,74 @@ fi
 # Este equipo confía en su propio certificado salvo que se diga lo contrario. Hace falta siempre que
 # aquí vaya a correr también la aplicación de escritorio —el caso normal, el anfitrión—, y no
 # estorba cuando no: es un certificado emitido en esta misma máquina hace un momento.
+#
+# Y ninguna de las tres ramas puede tumbar la instalación, que es lo importante de este bloque.
+#
+# En macOS, meter un certificado en el llavero del SISTEMA es una operación autorizada: aunque el
+# guion vaya con sudo, el sistema abre su propio diálogo pidiendo la contraseña de administrador.
+# Cancelarlo —o que el diálogo no llegue a aparecer, por ejemplo por SSH— devuelve error, y con
+# set -e eso paraba el guion AQUÍ, en el paso 5. Justo antes del 6, que es el que escribe
+# appsettings.Local.json con la contraseña de la base de datos y la clave de firma de tokens: el
+# servidor se quedaba sin su archivo de claves por no haber podido tocar el llavero, que son dos
+# cosas que no tienen nada que ver.
+#
+# Así que aquí se avisa y se sigue. Lo que se pierde si esto no sale es una sola cosa, y está dicha:
+# la aplicación de escritorio DE ESTE equipo no se fiará del certificado. Los puestos no dependen de
+# esto —ellos instalan el .crt con preparar-puesto— y el servicio arranca igual.
+confiar_en_certificado() {
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        sudo security add-trusted-cert -d -r trustRoot \
+             -k /Library/Keychains/System.keychain "$CRT"
+        return
+    fi
+
+    if [[ -d /usr/local/share/ca-certificates ]]; then
+        sudo cp "$CRT" "/usr/local/share/ca-certificates/$NOMBRE_SERVIDOR.crt"
+        sudo update-ca-certificates >/dev/null
+        return
+    fi
+
+    if [[ -d /etc/pki/ca-trust/source/anchors ]]; then
+        sudo cp "$CRT" "/etc/pki/ca-trust/source/anchors/$NOMBRE_SERVIDOR.crt"
+        sudo update-ca-trust
+        return
+    fi
+
+    return 2                                        # no sé dónde va en este sistema
+}
+
+# Cómo se instala a mano lo que acaba de fallar, para poder copiarlo de la pantalla.
+orden_confianza_manual() {
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        echo "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $CRT"
+    else
+        echo "ver Documentación/01-Guía-de-Instalación.md, §4.2"
+    fi
+}
+
 if [[ $SIN_CONFIANZA -eq 1 ]]; then
     aviso "certificado sin instalar como raíz de confianza (--sin-confianza)"
     aviso "si este equipo ejecuta la aplicación, no podrá conectarse a su propio servidor"
-elif [[ "$SISTEMA" == "Darwin" ]]; then
-    sudo security add-trusted-cert -d -r trustRoot \
-         -k /Library/Keychains/System.keychain "$CRT"
-    bien "certificado instalado en el llavero del sistema"
-elif [[ -d /usr/local/share/ca-certificates ]]; then
-    sudo cp "$CRT" "/usr/local/share/ca-certificates/$NOMBRE_SERVIDOR.crt"
-    sudo update-ca-certificates >/dev/null
-    bien "certificado instalado en el almacén del sistema"
-elif [[ -d /etc/pki/ca-trust/source/anchors ]]; then
-    sudo cp "$CRT" "/etc/pki/ca-trust/source/anchors/$NOMBRE_SERVIDOR.crt"
-    sudo update-ca-trust
-    bien "certificado instalado en el almacén del sistema"
 else
-    aviso "no sé dónde instalar certificados en este sistema; hazlo a mano (guía §4.2)"
+    [[ "$SISTEMA" == "Darwin" ]] && \
+        echo "   el sistema va a pedir la contraseña de administrador para el llavero"
+
+    # set +e alrededor: es el único bloque del guion al que se le permite fallar sin parar nada.
+    set +e
+    confiar_en_certificado
+    RESULTADO_CONFIANZA=$?
+    set -e
+
+    if [[ $RESULTADO_CONFIANZA -eq 0 ]]; then
+        bien "certificado instalado en el almacén de confianza del sistema"
+    elif [[ $RESULTADO_CONFIANZA -eq 2 ]]; then
+        aviso "no sé dónde instalar certificados en este sistema; hazlo a mano (guía §4.2)"
+    else
+        aviso "no he podido instalarlo en el almacén de confianza (autorización denegada)"
+        aviso "la instalación SIGUE: esto solo afecta a la aplicación de escritorio de este equipo"
+        aviso "para arreglarlo después:"
+        aviso "  $(orden_confianza_manual)"
+    fi
 fi
 
 # ── 6. Configuración del servicio ─────────────────────────────────────────────────────────────────
@@ -1559,15 +1673,43 @@ PLIST
     sudo launchctl bootstrap system /Library/LaunchDaemons/es.judo.api.plist
 }
 
+# Igual que la confianza del certificado: dejar el arranque automático puesto es lo último que hace
+# el guion, y si el sistema lo rechaza no tiene sentido tirar por tierra los nueve pasos anteriores.
+# El servidor funciona sin esto —la propia aplicación tiene un botón para arrancar el servicio—, así
+# que se avisa, se dice cómo hacerlo a mano y se sigue hasta el resumen.
+instalar_arranque() {
+    set +e
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        instalar_launchd
+    else
+        instalar_systemd
+    fi
+    local codigo=$?
+    set -e
+
+    if [[ $codigo -eq 0 ]]; then
+        [[ "$SISTEMA" == "Darwin" ]] && bien "launchd: es.judo.api instalado y arrancado" \
+                                     || bien "systemd: judo-api instalado y arrancado"
+        return 0
+    fi
+
+    aviso "no he podido dejar el arranque automático puesto"
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        aviso "  sudo launchctl bootstrap system /Library/LaunchDaemons/es.judo.api.plist"
+        aviso "  y si dice que ya está cargado:  sudo launchctl bootout system/es.judo.api"
+    else
+        aviso "  sudo systemctl enable --now judo-api"
+    fi
+    aviso "mientras tanto, el servicio se arranca desde la propia aplicación"
+    SIN_SERVICIO=1
+    return 0
+}
+
 if [[ $SIN_SERVICIO -eq 1 ]]; then
     aviso "no se instala el arranque automático (--sin-servicio)"
     aviso "la API habrá que arrancarla a mano, o desde el botón de la propia aplicación"
-elif [[ "$SISTEMA" == "Darwin" ]]; then
-    instalar_launchd
-    bien "launchd: es.judo.api instalado y arrancado"
-elif command -v systemctl >/dev/null; then
-    instalar_systemd
-    bien "systemd: judo-api instalado y arrancado"
+elif [[ "$SISTEMA" == "Darwin" ]] || command -v systemctl >/dev/null; then
+    instalar_arranque
 else
     aviso "no hay systemd; configura el arranque a mano (doc 00, §7.3)"
     SIN_SERVICIO=1
@@ -1661,8 +1803,39 @@ TEXTO
     [[ -n "${SUDO_USER:-}" ]] && chown "$SUDO_USER" "$CREDENCIALES" 2>/dev/null || true
 fi
 
+# Antes de dar el servidor por preparado, las dos cosas que no puede no tener.
+#
+# Está aquí, al final y por separado, porque son las dos que se echan de menos MÁS TARDE —cuando ya
+# no hay nadie delante del terminal— y las dos que no se pueden recomponer adivinando: sin
+# appsettings.Local.json el servicio no arranca, y sin el archivo de credenciales no hay forma de
+# restaurar una copia de seguridad. Si por lo que sea falta alguno, se dice aquí en rojo y no en una
+# línea perdida veinte pasos atrás.
+FALTA_ALGO=0
+
+if [[ ! -f "$CONFIG" ]]; then
+    FALTA_ALGO=1
+    echo
+    echo "${ROJO}NO se ha escrito la configuración del servicio:${FIN}" >&2
+    echo "   $CONFIG" >&2
+    echo "   Sin ella el servicio no puede arrancar. Vuelve a lanzar el guion." >&2
+fi
+
+if [[ $CONSERVAR_CONFIG -eq 0 && ! -f "$CREDENCIALES" ]]; then
+    FALTA_ALGO=1
+    echo
+    echo "${ROJO}NO se ha escrito el archivo de credenciales:${FIN}" >&2
+    echo "   $CREDENCIALES" >&2
+    echo "   Las contraseñas de judo_owner y del certificado no están en ningún otro sitio." >&2
+    echo "   Relanza el guion con --forzar-configuracion para volver a generarlas (ojo: eso" >&2
+    echo "   cierra las sesiones abiertas)." >&2
+fi
+
 echo
-echo "${VERDE}Servidor preparado.${FIN}"
+if [[ $FALTA_ALGO -eq 1 ]]; then
+    echo "${AMARILLO}Servidor preparado a medias: mira los avisos de arriba.${FIN}"
+else
+    echo "${VERDE}Servidor preparado.${FIN}"
+fi
 echo
 if [[ $CONSERVAR_CONFIG -eq 0 ]]; then
     echo "   Contraseñas guardadas en:  $CREDENCIALES"
