@@ -21,6 +21,11 @@
     los guiones de los puestos vienen DENTRO de ese paquete, así que lo normal es ejecutarlo desde
     ahí y no indicar -Dir.
 
+    PostgreSQL, si falta, lo pone el paso 2 por dos vías: primero winget y, si winget no consigue
+    descargarlo —EDB le devuelve un 403 y ahí se queda—, bajando el instalador de EDB directamente.
+    Son 375 MB y se guardan para no repetir la descarga. En un servidor sin salida a Internet, deja
+    el instalador junto a este guion o pásalo con -InstaladorPostgresql.
+
     Windows no ejecuta guiones .ps1 con la directiva por defecto (Restricted / RemoteSigned + marca
     de Internet), así que hay que lanzarlo con -ExecutionPolicy Bypass, en PowerShell abierto como
     administrador. Bypass afecta sólo a esa invocación: no cambia la directiva del equipo. Lo que NO
@@ -71,6 +76,7 @@ param(
     [int]      $Puerto          = 8443,
     [string]   $Superusuario    = "postgres",
     [string]   $ClavePostgres,                       # contraseña del superusuario; se pide si falta
+    [string]   $InstaladorPostgresql,                # .exe de EDB ya descargado, si hay que traerlo
     [string]   $ClaveOwner,
     [string]   $ClaveApi,
     [string]   $ClavePfx,
@@ -505,22 +511,39 @@ if ($Deshacer) {
             foreach ($n in ($lista -split "`n")) { if ($n.Trim()) { Write-Host "     - $($n.Trim())" } }
             Aviso "PostgreSQL se queda instalado. Desinstalarlo se llevaria esos datos por delante."
         }
-        elseif (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Aviso "no hay winget: desinstala PostgreSQL desde 'Aplicaciones instaladas'"
-        }
         else {
-            # El identificador exacto que hay puesto, y no uno fijo: la version instalada puede no ser
-            # la 18 que instala este mismo guion.
-            $listado = LeerNativoD { winget list --source winget }
-            $id = ($listado | Select-String 'PostgreSQL\.PostgreSQL\S*' |
-                   ForEach-Object { $_.Matches[0].Value } | Select-Object -First 1)
+            # Dos vias, y las dos hacen falta porque tambien son dos las de instalar (paso 2): winget
+            # si fue winget quien lo puso, y el desinstalador que deja EDB en su propia carpeta si el
+            # paquete se bajo directamente porque winget no pudo.
+            $id = $null
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                # El identificador exacto que hay puesto, y no uno fijo: la version instalada puede no
+                # ser la 18 que instala este mismo guion.
+                $listado = LeerNativoD { winget list --source winget }
+                $id = ($listado | Select-String 'PostgreSQL\.PostgreSQL\S*' |
+                       ForEach-Object { $_.Matches[0].Value } | Select-Object -First 1)
+            }
 
-            if (-not $id) {
-                Aviso "PostgreSQL no lo puso winget: desinstalalo desde 'Aplicaciones instaladas'"
-            } elseif ($Simular -or (EjecutarNativoD { winget uninstall --id $id --silent --disable-interactivity })) {
+            # El de EDB: C:\Program Files\PostgreSQL\18\uninstall-postgresql.exe, y admite el mismo
+            # modo desatendido que el instalador.
+            # Con TryParse y no con [int] a secas: aqui un nombre de carpeta que no sea un numero no
+            # puede llevarse por delante una desinstalacion hecha a medias.
+            $suyo = Get-ChildItem "C:\Program Files\PostgreSQL\*\uninstall-postgresql.exe" `
+                                  -ErrorAction SilentlyContinue |
+                    Sort-Object { $v = 0; [void][int]::TryParse($_.Directory.Name, [ref]$v); $v } -Descending |
+                    Select-Object -First 1 -ExpandProperty FullName
+
+            if ($id -and ($Simular -or (EjecutarNativoD { winget uninstall --id $id --silent --disable-interactivity }))) {
                 ResultadoD "PostgreSQL desinstalado ($id)"
-            } else {
-                Aviso "no he podido desinstalar PostgreSQL ($id). Hazlo desde 'Aplicaciones instaladas'"
+            }
+            elseif ($suyo -and ($Simular -or (EjecutarNativoD { & $suyo --mode unattended --unattendedmodeui none }))) {
+                ResultadoD "PostgreSQL desinstalado con su propio desinstalador"
+            }
+            elseif ($id -or $suyo) {
+                Aviso "no he podido desinstalar PostgreSQL. Hazlo desde 'Aplicaciones instaladas'"
+            }
+            else {
+                Aviso "no encuentro como desinstalar PostgreSQL: hazlo desde 'Aplicaciones instaladas'"
             }
         }
 
@@ -798,12 +821,111 @@ if (-not $ClavePostgres) {
            "        Pasala con -ClavePostgres si lanzas este guion desde otro programa.")
 }
 
+# El instalador de EDB que se descarga cuando winget no puede, con su huella. La version va fijada
+# a proposito y la huella es la que comprueba el propio manifiesto de winget: un instalador de 375
+# MB que llega a medias, o cambiado, no se distingue de uno bueno hasta que la instalacion falla
+# mucho mas adelante y por otro motivo. Al subir de version se cambian las tres lineas juntas, y el
+# identificador de winget de mas abajo si cambia la version mayor.
+$PgVersion = "18.6-3"
+$PgUrl     = "https://get.enterprisedb.com/postgresql/postgresql-$PgVersion-windows-x64.exe"
+$PgHuella  = "3BB55A421849FA5749FE807E45B05A9A7758A16389591EE0A41B7FCABF724B90"
+
+function HuellaCoincide ($ruta, $huella) {
+    if (-not (Test-Path $ruta)) { return $false }
+    return ((Get-FileHash $ruta -Algorithm SHA256).Hash -eq $huella)
+}
+
+# Deja el instalador de EDB en disco y devuelve su ruta.
+#
+# Antes de descargar mira si ya esta: lo que diga -InstaladorPostgresql, una copia al lado de este
+# guion, y la que dejo una ejecucion anterior en el temporal. Son 375 MB, y una instalacion que se
+# prueba varias veces en el mismo equipo -o varios servidores en la misma sala- no tiene por que
+# traerlos cada vez.
+function ObtenerInstaladorPostgresql {
+    $nombre = "postgresql-$PgVersion-windows-x64.exe"
+
+    # Indicado a mano: se usa tal cual y sin comprobar la huella. Quien lo pasa sabe lo que pasa, y
+    # puede ser a proposito otra version.
+    if ($InstaladorPostgresql) {
+        if (-not (Test-Path $InstaladorPostgresql)) {
+            Fallo "No existe el instalador indicado en -InstaladorPostgresql: $InstaladorPostgresql"
+        }
+        Bien "instalador indicado a mano: $InstaladorPostgresql"
+        return $InstaladorPostgresql
+    }
+
+    $cache = Join-Path $env:TEMP "judo-postgresql"
+    foreach ($sitio in @((Join-Path $PSScriptRoot $nombre), (Join-Path $cache $nombre))) {
+        if (HuellaCoincide $sitio $PgHuella) {
+            Bien "instalador de PostgreSQL $PgVersion ya descargado ($sitio)"
+            return $sitio
+        }
+    }
+
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $destino = Join-Path $cache $nombre
+    Remove-Item $destino -Force -ErrorAction SilentlyContinue
+
+    Aviso "descargando PostgreSQL $PgVersion de EDB (unos 375 MB; tarda y no dice nada mientras)"
+
+    # curl.exe viene con Windows desde la 1803, sigue redirecciones y sabe reintentar. Se llama por
+    # su nombre completo a proposito: en PowerShell, "curl" a secas es un alias de Invoke-WebRequest.
+    #
+    # La llamada va con la preferencia de errores en Continue por el mismo motivo que las de psql:
+    # con "Stop", cualquier cosa que curl escriba en la salida de error seria un error terminante en
+    # vez de una descarga que no ha salido y de la que hay algo que contar.
+    $curl   = Join-Path $env:SystemRoot "System32\curl.exe"
+    $bajado = $false
+    $queja  = ""
+
+    if (Test-Path $curl) {
+        $anterior = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $queja  = (& $curl -L --fail --retry 3 --retry-delay 5 -s -S -o $destino $PgUrl 2>&1 |
+                       Out-String).Trim()
+            $bajado = ($LASTEXITCODE -eq 0)
+        }
+        finally { $ErrorActionPreference = $anterior }
+    }
+    else {
+        # Sin curl.exe. Invoke-WebRequest sirve, pero su barra de progreso sobre una descarga de este
+        # tamano la hace mucho mas lenta en PowerShell 5, asi que se apaga.
+        $progreso = $ProgressPreference
+        try {
+            $ProgressPreference = "SilentlyContinue"
+            Invoke-WebRequest -Uri $PgUrl -OutFile $destino -UseBasicParsing
+            $bajado = $true
+        }
+        catch { $queja = $_.Exception.Message }
+        finally { $ProgressPreference = $progreso }
+    }
+
+    if (-not $bajado) {
+        Remove-Item $destino -Force -ErrorAction SilentlyContinue
+        Fallo ("No he podido descargar PostgreSQL de $PgUrl.`n" +
+               "        $queja`n" +
+               "        Este equipo no llega a EDB. Descargalo en otro, dejalo aqui con este`n" +
+               "        nombre exacto y vuelve a ejecutar el guion:`n" +
+               "          $(Join-Path $PSScriptRoot $nombre)`n" +
+               "        Si esta en otro sitio o es otra version, pasalo con -InstaladorPostgresql.`n" +
+               "        O instalalo a mano (guia 01, 3.1).")
+    }
+
+    if (-not (HuellaCoincide $destino $PgHuella)) {
+        Remove-Item $destino -Force -ErrorAction SilentlyContinue
+        Fallo ("El instalador descargado no es el que se esperaba (la huella no coincide).`n" +
+               "        No lo ejecuto. Vuelve a intentarlo, y si se repite instala PostgreSQL a`n" +
+               "        mano (guia 01, 3.1).")
+    }
+
+    Bien "instalador descargado y comprobado"
+    return $destino
+}
+
 if (-not $psql) {
     if ($SinPostgresql) {
         Fallo "PostgreSQL no esta instalado y se ha pedido -SinPostgresql. Instalalo a mano (guia 01, 3.1)."
-    }
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Fallo "No hay winget. Instala PostgreSQL a mano (guia 01, 3.1) y vuelve a ejecutar."
     }
 
     # La contrasena viaja en la linea de ordenes del instalador, entre comillas dobles. Una comilla
@@ -822,8 +944,10 @@ if (-not $psql) {
     # ejecuta este guion en una ventana oculta: con el asistente de EDB por delante no habia nadie
     # que lo rellenara, y la contrasena que se decidiera ahi no habria forma de saberla despues.
     #
-    # --silent es de winget -que no ensene interfaz-. Lo de dentro de --custom son los conmutadores
-    # del instalador de EDB (InstallBuilder), y van explicitos en vez de dejarlos al manifiesto:
+    # Estos son los conmutadores del instalador de EDB (InstallBuilder). Van explicitos en vez de
+    # dejarlos al manifiesto de winget, y son los mismos por las dos vias -winget se los pasa dentro
+    # de --custom, y la descarga directa en su linea de ordenes-, para que el cluster salga igual sin
+    # importar de donde haya venido el paquete:
     #
     #   --mode unattended --unattendedmodeui none   sin ventanas y sin preguntas
     #   --superpassword                             la contrasena del usuario postgres
@@ -837,13 +961,67 @@ if (-not $psql) {
                     "--disable-components stackbuilder " +
                     "--superpassword $comilla$ClavePostgres$comilla"
 
-    winget install --id PostgreSQL.PostgreSQL.18 --silent `
-                   --accept-package-agreements --accept-source-agreements `
-                   --custom $conmutadores
+    # Hay dos formas de conseguir el paquete y se prueban en este orden: winget, y si winget no
+    # puede, descargarlo de EDB y ejecutarlo aqui.
+    #
+    # winget primero porque es lo que deja PostgreSQL registrado como paquete suyo, y de eso se
+    # aprovecha la desinstalacion (-Deshacer).
+    #
+    # La descarga directa esta porque winget se queda sin poder bajarlo: su descargador recibe un
+    # 403 de get.enterprisedb.com -"0x80190193 : Prohibido"- y se para ahi. El paquete SI esta en esa
+    # direccion, y curl lo trae sin problema; es el descargador de winget el que se queda fuera. Sin
+    # esta segunda via, una instalacion lanzada desde la aplicacion no tenia por donde seguir.
+    $instalado = $false
 
-    if ($LASTEXITCODE -ne 0) {
-        Fallo ("winget no ha podido instalar PostgreSQL (codigo $LASTEXITCODE).`n" +
-               "        Instalalo a mano (guia 01, 3.1) y vuelve a ejecutar este guion.")
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        # Con la preferencia de errores en Continue, como las llamadas a psql y por lo mismo: si
+        # winget escribe una sola linea en la salida de error, con "Stop" eso es un error terminante
+        # y el guion se muere AQUI, sin llegar a la descarga directa que hay debajo. La salida sigue
+        # yendo a la pantalla; lo unico que cambia es que no aborta.
+        $anterior = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            winget install --id PostgreSQL.PostgreSQL.18 --silent `
+                           --accept-package-agreements --accept-source-agreements `
+                           --custom $conmutadores
+            $codigoWinget = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $anterior }
+
+        if ($codigoWinget -eq 0) { $instalado = $true }
+        elseif (BuscarPsql) {
+            # winget ha dado error PERO PostgreSQL ha quedado puesto: entonces el paquete se
+            # descargo y lo que fallo vino despues. Descargarlo otra vez y ejecutarlo encima no
+            # arregla eso, asi que no se hace. Si lo que hay sirve o no lo dice la comprobacion de
+            # conexion que viene justo debajo, que es la que de verdad lo sabe.
+            Aviso ("winget ha dado error (codigo $codigoWinget) pero PostgreSQL ha quedado puesto:" +
+                   "`n        sigo y compruebo si responde.")
+            $instalado = $true
+        }
+        else {
+            Aviso ("winget no ha podido instalar PostgreSQL (codigo $codigoWinget).`n" +
+                   "        No ha quedado nada puesto: se descarga el instalador de EDB y se sigue.")
+        }
+    }
+    else { Aviso "no hay winget en este equipo; se descarga el instalador de EDB" }
+
+    if (-not $instalado) {
+        $instaladorEdb = ObtenerInstaladorPostgresql
+
+        # Start-Process -Wait y no la llamada directa: al instalador hay que pasarle sus conmutadores
+        # tal cual, en una sola cadena, y con el operador de llamada PowerShell partiria la contrasena
+        # entrecomillada por su cuenta.
+        #
+        # El codigo puede volver vacio si el proceso ya no esta para preguntarle. Eso no es un fallo:
+        # lo que decide es si ha aparecido psql, que se comprueba a continuacion.
+        $proceso = Start-Process -FilePath $instaladorEdb -ArgumentList $conmutadores -Wait -PassThru
+        $codigo  = $proceso.ExitCode
+
+        if ($null -ne $codigo -and $codigo -ne 0) {
+            Fallo ("El instalador de PostgreSQL ha terminado con error $codigo.`n" +
+                   "        Lo que ha pasado esta en $env:TEMP\install-postgresql.log.`n" +
+                   "        Instalalo a mano (guia 01, 3.1) y vuelve a ejecutar este guion.")
+        }
     }
 
     $psql = BuscarPsql
@@ -885,9 +1063,9 @@ foreach ($intento in 1..12) {
 if (-not $responde) {
     if ($acabaDeInstalarse) {
         Fallo ("PostgreSQL se acaba de instalar pero no acepta la contrasena que se le ha dado.`n" +
-               "        Quitalo -winget uninstall --id PostgreSQL.PostgreSQL.18- e instalalo a mano`n" +
-               "        con su asistente (guia 01, 3.1): ahi eliges la contrasena, y despues la`n" +
-               "        escribes en la pantalla de la aplicacion.")
+               "        Quitalo desde 'Aplicaciones instaladas' e instalalo a mano con su asistente`n" +
+               "        (guia 01, 3.1): ahi eliges la contrasena, y despues la escribes en la`n" +
+               "        pantalla de la aplicacion.")
     }
 
     Fallo ("PostgreSQL responde, pero no con esa contrasena de '$Superusuario'.`n" +

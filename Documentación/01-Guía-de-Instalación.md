@@ -206,14 +206,31 @@ entender un servidor que montó otra persona.
 ### 3.1 PostgreSQL
 
 > **Esto lo hace el guion solo** (paso 2), también en Windows y también cuando se lanza desde la
-> aplicación: instala PostgreSQL con `winget` en modo desatendido —sin asistente— y le pone al
-> usuario `postgres` la contraseña que se le haya dado. Por eso esa contraseña se pide **antes** de
-> instalar nada: cuando PostgreSQL ya está es la que hay que recordar, y cuando no está es la que se
-> elige para el clúster nuevo. Después comprueba que responde y que la contraseña vale antes de
-> seguir, que es donde se veía el fallo tarde y mal.
+> aplicación: instala PostgreSQL en modo desatendido —sin asistente— y le pone al usuario `postgres`
+> la contraseña que se le haya dado. Por eso esa contraseña se pide **antes** de instalar nada:
+> cuando PostgreSQL ya está es la que hay que recordar, y cuando no está es la que se elige para el
+> clúster nuevo. Después comprueba que responde y que la contraseña vale antes de seguir, que es
+> donde se veía el fallo tarde y mal.
 >
-> Lo que sigue es para instalarlo **a mano**: un equipo sin `winget`, un PostgreSQL que ya estaba con
-> otros datos dentro, o simplemente querer verlo paso a paso.
+> Lo intenta por dos vías, en este orden:
+>
+> 1. **`winget`**, que además deja PostgreSQL registrado como paquete suyo y así `-Deshacer` puede
+>    desinstalarlo con `winget uninstall`.
+> 2. **El instalador de EDB descargado directamente**, cuando winget no consigue traerlo. Pasa: el
+>    descargador de winget recibe un `0x80190193 : Prohibido (403)` de `get.enterprisedb.com` y se
+>    para ahí, aunque el paquete esté en esa misma dirección y se descargue sin problema por otro
+>    medio. El guion lo baja con `curl`, **comprueba su huella SHA-256** antes de ejecutarlo y lo
+>    guarda en el temporal para no repetir los 375 MB en la siguiente ejecución. La versión y la
+>    huella están fijadas en el guion (`$PgVersion`, `$PgHuella`); al subirlas hay que cambiar las
+>    dos juntas.
+>
+> **Servidor sin salida a Internet.** Descarga el instalador en otro equipo y déjalo junto al guion
+> con su nombre original (`postgresql-18.6-3-windows-x64.exe`), o pásalo con
+> `-InstaladorPostgresql C:\ruta\al\instalador.exe`. Con `-InstaladorPostgresql` no se comprueba la
+> huella: lo indicado a mano se usa tal cual, y puede ser otra versión a propósito.
+>
+> Lo que sigue es para instalarlo **a mano**: un PostgreSQL que ya estaba con otros datos dentro, o
+> simplemente querer verlo paso a paso.
 
 **Windows.** Instalador de EDB desde
 [postgresql.org/download/windows](https://www.postgresql.org/download/windows/). Durante el
