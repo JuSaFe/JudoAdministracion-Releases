@@ -632,7 +632,7 @@ if ($Deshacer) {
 
         if (BorrarCarpetaD $carpeta) { ResultadoD "borrada $carpeta"; continue }
 
-        Aviso "no he podido borrar $carpeta: algo la tiene abierta todavia."
+        Aviso "no he podido borrar ${carpeta}: algo la tiene abierta todavia."
 
         # Que la carpeta se quede es un resto; que se quede el EJECUTABLE no lo es.
         #
