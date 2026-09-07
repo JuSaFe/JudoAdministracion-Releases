@@ -774,28 +774,126 @@ function BuscarPsql {
 }
 
 $psql = BuscarPsql
+
+# La contrasena del superusuario se resuelve AQUI, antes de instalar nada, y el orden importa:
+#
+#   - Si PostgreSQL ya esta en este equipo, es la que se decidio el dia que se instalo.
+#   - Si NO esta, este guion lo instala, y entonces esta contrasena no es la que "ya tiene" el
+#     cluster sino LA QUE SE LE VA A PONER. Tiene que estar decidida antes de lanzar el instalador,
+#     porque se le pasa a el.
+#
+# Antes se pedia despues de instalar, y ahi no habia forma de acertar: el instalador la habia
+# preguntado por su cuenta, en su propio asistente.
+if (-not $ClavePostgres) {
+    $etiqueta = if ($psql) { "Contrasena del superusuario '$Superusuario' de PostgreSQL" }
+                else       { "Contrasena que se le pondra al superusuario '$Superusuario' (PostgreSQL se va a instalar)" }
+
+    $segura = Read-Host "   $etiqueta" -AsSecureString
+    $ClavePostgres = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura))
+}
+
+if (-not $ClavePostgres) {
+    Fallo ("Hace falta la contrasena del superusuario '$Superusuario' de PostgreSQL.`n" +
+           "        Pasala con -ClavePostgres si lanzas este guion desde otro programa.")
+}
+
 if (-not $psql) {
     if ($SinPostgresql) {
         Fallo "PostgreSQL no esta instalado y se ha pedido -SinPostgresql. Instalalo a mano (guia 01, 3.1)."
     }
-    Aviso "PostgreSQL no esta instalado; instalando con winget"
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Fallo "No hay winget. Instala PostgreSQL a mano (guia 01, 3.1) y vuelve a ejecutar."
     }
-    winget install --id PostgreSQL.PostgreSQL.18 --accept-package-agreements --accept-source-agreements
+
+    # La contrasena viaja en la linea de ordenes del instalador, entre comillas dobles. Una comilla
+    # doble dentro de ella la partiria en dos, asi que se dice ahora y no se descubre despues con un
+    # cluster ya instalado y una contrasena que no es la que se penso.
+    if ($ClavePostgres -match [char]34) {
+        Fallo ("La contrasena del superusuario no puede llevar comillas dobles: hay que pasarsela al`n" +
+               "        instalador de PostgreSQL en su linea de ordenes. Elige otra y vuelve a empezar.")
+    }
+
+    Aviso "PostgreSQL no esta instalado; se instala ahora SIN asistente (tarda unos minutos)"
+
+    # Desatendido de verdad, y con la contrasena puesta desde aqui.
+    #
+    # Esto es lo que hace que la instalacion se pueda lanzar desde la aplicacion de escritorio, que
+    # ejecuta este guion en una ventana oculta: con el asistente de EDB por delante no habia nadie
+    # que lo rellenara, y la contrasena que se decidiera ahi no habria forma de saberla despues.
+    #
+    # --silent es de winget -que no ensene interfaz-. Lo de dentro de --custom son los conmutadores
+    # del instalador de EDB (InstallBuilder), y van explicitos en vez de dejarlos al manifiesto:
+    #
+    #   --mode unattended --unattendedmodeui none   sin ventanas y sin preguntas
+    #   --superpassword                             la contrasena del usuario postgres
+    #   --serverport 5432                           el puerto que espera el resto del guion y la
+    #                                               cadena de conexion que escribe el paso 6. Sin
+    #                                               esto, un cluster anterior ocupando el 5432 haria
+    #                                               que el instalador eligiera otro sin decir nada.
+    #   --disable-components stackbuilder           Stack Builder no hace falta aqui y abre ventanas
+    $comilla = [char]34
+    $conmutadores = "--mode unattended --unattendedmodeui none --serverport 5432 " +
+                    "--disable-components stackbuilder " +
+                    "--superpassword $comilla$ClavePostgres$comilla"
+
+    winget install --id PostgreSQL.PostgreSQL.18 --silent `
+                   --accept-package-agreements --accept-source-agreements `
+                   --custom $conmutadores
+
+    if ($LASTEXITCODE -ne 0) {
+        Fallo ("winget no ha podido instalar PostgreSQL (codigo $LASTEXITCODE).`n" +
+               "        Instalalo a mano (guia 01, 3.1) y vuelve a ejecutar este guion.")
+    }
+
     $psql = BuscarPsql
     if (-not $psql) { Fallo "La instalacion no ha dejado psql.exe donde se esperaba." }
-    Aviso "winget instala con la contrasena de superusuario que pida su asistente; tenla a mano"
+
+    $acabaDeInstalarse = $true
+    Bien "PostgreSQL instalado"
 }
 Bien "psql en $psql"
 
-if (-not $ClavePostgres) {
-    $segura = Read-Host "   Contrasena del superusuario '$Superusuario' de PostgreSQL" -AsSecureString
-    $ClavePostgres = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura))
-}
 # PGPASSWORD evita que psql pida la contraseña en cada llamada. Solo vive en este proceso.
 $env:PGPASSWORD = $ClavePostgres
+
+# Que responda, y que la contrasena valga, antes de seguir.
+#
+# Son dos cosas y las dos hacen falta aqui. El instalador vuelve cuando el servicio esta REGISTRADO,
+# no cuando acepta conexiones, asi que recien instalado hay unos segundos en los que todo falla. Y
+# una contrasena que no vale, si no se comprueba ahora, salta a mitad del paso 4 con un mensaje de
+# psql que no dice que el problema era la contrasena.
+#
+# La llamada va con la preferencia de errores en Continue porque psql escribe en la salida de error
+# hasta los avisos, y con "Stop" eso seria un error terminante en vez de un "todavia no".
+function SuperusuarioResponde {
+    $anterior = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $psql -U $Superusuario -d postgres -tAc "SELECT 1" 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    }
+    finally { $ErrorActionPreference = $anterior }
+}
+
+$responde = $false
+foreach ($intento in 1..12) {
+    if (SuperusuarioResponde) { $responde = $true; break }
+    Start-Sleep -Seconds 5
+}
+
+if (-not $responde) {
+    if ($acabaDeInstalarse) {
+        Fallo ("PostgreSQL se acaba de instalar pero no acepta la contrasena que se le ha dado.`n" +
+               "        Quitalo -winget uninstall --id PostgreSQL.PostgreSQL.18- e instalalo a mano`n" +
+               "        con su asistente (guia 01, 3.1): ahi eliges la contrasena, y despues la`n" +
+               "        escribes en la pantalla de la aplicacion.")
+    }
+
+    Fallo ("PostgreSQL responde, pero no con esa contrasena de '$Superusuario'.`n" +
+           "        Es la que se decidio al instalar PostgreSQL en este equipo, no ninguna de la`n" +
+           "        aplicacion.")
+}
 
 function PsqlSuper {
     param([string]$Base = "postgres", [string[]]$Argumentos)

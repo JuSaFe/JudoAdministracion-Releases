@@ -205,6 +205,16 @@ entender un servidor que montó otra persona.
 
 ### 3.1 PostgreSQL
 
+> **Esto lo hace el guion solo** (paso 2), también en Windows y también cuando se lanza desde la
+> aplicación: instala PostgreSQL con `winget` en modo desatendido —sin asistente— y le pone al
+> usuario `postgres` la contraseña que se le haya dado. Por eso esa contraseña se pide **antes** de
+> instalar nada: cuando PostgreSQL ya está es la que hay que recordar, y cuando no está es la que se
+> elige para el clúster nuevo. Después comprueba que responde y que la contraseña vale antes de
+> seguir, que es donde se veía el fallo tarde y mal.
+>
+> Lo que sigue es para instalarlo **a mano**: un equipo sin `winget`, un PostgreSQL que ya estaba con
+> otros datos dentro, o simplemente querer verlo paso a paso.
+
 **Windows.** Instalador de EDB desde
 [postgresql.org/download/windows](https://www.postgresql.org/download/windows/). Durante el
 asistente:
