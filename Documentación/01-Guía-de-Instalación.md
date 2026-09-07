@@ -1283,6 +1283,15 @@ Si alguna cosa no se puede quitar, el guion **sigue con el resto** y lo dice al 
 medias y en silencio es lo único que no puede pasar: un servicio que sigue arrancando al encender el
 equipo y buscando una carpeta que ya no existe es más difícil de diagnosticar que no haber empezado.
 
+**En Windows, la carpeta del paso 8 se puede resistir.** Es el único paso que depende de que el
+sistema haya soltado los archivos, y cuando llega acaba de lanzarse la desinstalación de PostgreSQL,
+que sigue trabajando por su cuenta. El guion insiste unos segundos y, si aun así no puede, hace dos
+cosas antes de rendirse: **aparta el ejecutable** del servicio renombrándolo —es lo único que mira la
+aplicación para saber si este equipo es el servidor, así que sin él el equipo ya no lo es para nadie—
+y dice que la carpeta se puede borrar a mano después de reiniciar. Nada depende de ella: si algún día
+se vuelve a instalar el servidor aquí, la propia aplicación la quita antes de descomprimir la versión
+nueva.
+
 ### 9.2 Un puesto
 
 ```bash

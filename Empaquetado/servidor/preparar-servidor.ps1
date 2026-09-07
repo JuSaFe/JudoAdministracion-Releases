@@ -221,6 +221,30 @@ if ($Deshacer) {
         else          { Bien $t }
     }
 
+    # Borrar una carpeta insistiendo, y decidiendo por lo que hay en disco y no por si Remove-Item
+    # ha dado error.
+    #
+    # En Windows, un archivo cuyo proceso acaba de morir sigue "en uso" un instante: el proceso ya no
+    # esta, pero el sistema no ha soltado todavia sus identificadores. Y aqui eso pasa justo en el
+    # peor momento: entre parar el servicio (paso 1) y borrar su carpeta (paso 8) puede haber ido
+    # todo muy rapido, y ademas por medio se ha lanzado la desinstalacion de PostgreSQL, que sigue
+    # trabajando por su cuenta y deja el equipo ocupado. Con un solo intento, la carpeta del servicio
+    # se quedaba puesta y el aviso no daba nada que hacer.
+    #
+    # Son cinco intentos con dos segundos de espera, y solo espera la carpeta que se resiste: la que
+    # se borra a la primera no cuesta nada.
+    function BorrarCarpetaD ($carpeta) {
+        if ($Simular) { return $true }
+
+        foreach ($intento in 1..5) {
+            Remove-Item $carpeta -Recurse -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path $carpeta)) { return $true }
+            if ($intento -lt 5) { Start-Sleep -Seconds 2 }
+        }
+
+        return (-not (Test-Path $carpeta))
+    }
+
     # Los mismos sitios que mira BuscarPsql, que esta definida mas abajo en el guion.
     function BuscarHerramientaD ($nombre) {
         $enPath = Get-Command $nombre -ErrorAction SilentlyContinue
@@ -355,6 +379,31 @@ if ($Deshacer) {
             HacerD { Stop-Process -Id $proceso -Force -ErrorAction SilentlyContinue } | Out-Null
         }
         ResultadoD "parado lo que quedaba escuchando en el puerto $Puerto"
+    }
+
+    # Y cualquier proceso que se este ejecutando DESDE la carpeta del servicio, escuche o no.
+    #
+    # Esto es lo que de verdad impide borrar la carpeta en el paso 8, y no por tener un archivo
+    # abierto: un proceso cuyo directorio de trabajo es $Dir la mantiene ocupada aunque no toque nada
+    # de dentro, y el servicio se lanza SIEMPRE con -WorkingDirectory $Dir (lo hacen la tarea
+    # programada, la prueba de arranque de este guion y el boton de la aplicacion). El sondeo por
+    # puerto de arriba no lo ve si arranco mal y no llego a escuchar, que es justo el caso en el que
+    # alguien desinstala.
+    #
+    # Se pregunta por Win32_Process y no con Get-Process: ExecutablePath se lee sin abrir el proceso,
+    # asi que un proceso del sistema al que no se tiene acceso no interrumpe el recorrido.
+    $dentroDe = $Dir.TrimEnd('\') + '\'
+    $desdeLaCarpeta = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ExecutablePath -and
+                                       $_.ExecutablePath.StartsWith($dentroDe, "OrdinalIgnoreCase") })
+
+    if ($desdeLaCarpeta.Count -eq 0) {
+        Igual "no habia nada ejecutandose desde $Dir"
+    } else {
+        foreach ($proceso in $desdeLaCarpeta) {
+            HacerD { Stop-Process -Id $proceso.ProcessId -Force -ErrorAction SilentlyContinue } | Out-Null
+        }
+        ResultadoD "parado lo que se ejecutaba desde la carpeta del servicio ($($desdeLaCarpeta.Count))"
     }
 
     # ── 2 y 3. Base de datos y PostgreSQL ─────────────────────────────────────────────────────────
@@ -579,12 +628,40 @@ if ($Deshacer) {
                   (Join-Path $env:ProgramData "JudoAdministracion\Assets"))
 
     foreach ($carpeta in $carpetas) {
-        if (Test-Path $carpeta) {
-            if (HacerD { Remove-Item $carpeta -Recurse -Force }) { ResultadoD "borrada $carpeta" }
-            else { Aviso "no he podido borrar $carpeta (algo la tiene abierta?)" }
-        } else {
-            Igual "no existe $carpeta"
+        if (-not (Test-Path $carpeta)) { Igual "no existe $carpeta"; continue }
+
+        if (BorrarCarpetaD $carpeta) { ResultadoD "borrada $carpeta"; continue }
+
+        Aviso "no he podido borrar $carpeta: algo la tiene abierta todavia."
+
+        # Que la carpeta se quede es un resto; que se quede el EJECUTABLE no lo es.
+        #
+        # Es lo unico que mira la aplicacion para saber si este equipo es un servidor
+        # (InstaladorServidor.YaEstaInstalado y ServicioApiLocal.LocalizarBinario, doc 00 §8.1), asi
+        # que dejarlo ahi convierte un equipo sin base de datos en un equipo al que la aplicacion
+        # sigue tratando como el servidor de la competicion: le ofrece arrancar el servicio, le
+        # esconde la instalacion y se niega a reinstalarla. Y es justo el archivo que suele estar en
+        # uso, porque el motivo de que la carpeta no se borre es casi siempre que el propio servicio
+        # todavia esta vivo.
+        #
+        # Un ejecutable en marcha no se puede borrar, pero SI se puede renombrar: lo permite NTFS, y
+        # es el mismo camino por el que la aplicacion se sustituye a si misma al actualizarse.
+        # Renombrado deja de ser el servicio para todo el mundo, y se va con la carpeta el dia que se
+        # pueda borrar.
+        $exe = Join-Path $carpeta "JudoAdministracion.Api.exe"
+
+        if (Test-Path $exe) {
+            Remove-Item "$exe.desinstalado" -Force -ErrorAction SilentlyContinue
+
+            if (HacerD { Rename-Item -LiteralPath $exe -NewName "JudoAdministracion.Api.exe.desinstalado" }) {
+                ResultadoD "ejecutable apartado: para la aplicacion, este equipo ya no es un servidor"
+            } else {
+                Aviso "  y tampoco he podido apartar el ejecutable, asi que la aplicacion seguira"
+                Aviso "  tratando este equipo como el servidor hasta que la carpeta desaparezca."
+            }
         }
+
+        Aviso "  Reinicia el equipo cuando puedas y borra la carpeta a mano; nada mas depende de ella."
     }
 
     # ── Resumen ───────────────────────────────────────────────────────────────────────────────────
