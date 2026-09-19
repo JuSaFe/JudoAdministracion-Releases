@@ -245,6 +245,14 @@ al_fallar() {
 set -o errtrace
 trap al_fallar ERR
 
+# Un bloque al que se le PERMITE fallar. Con "set +e" no basta: la trampa de ERR no depende de
+# errexit y salta igual, así que un fallo previsto y tratado —el llavero que dice que no, una regla
+# del cortafuegos que no estaba— acababa escribiendo el mensajón de "el guion se ha parado en…" y
+# mandando a quien instala a repetirlo todo, cuando el guion no se había parado en nada y seguía
+# hasta el final. Estas dos apagan y vuelven a encender las dos cosas a la vez.
+permitir_fallo()   { set +e; trap - ERR; }
+volver_a_vigilar() { set -e; trap al_fallar ERR; }
+
 # Contraseñas solo con letras y números: van dentro de una cadena de conexión y de un JSON, y así no
 # hay que preocuparse por comillas, punto y coma o barras.
 #
@@ -271,6 +279,39 @@ permisos() { chmod "$@" 2>/dev/null || sudo chmod "$@"; }
 
 NECESITA_ROOT=0
 como_root() { if [[ $NECESITA_ROOT -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
+
+# Ejecuta una orden con un plazo, y si se pasa la mata. Devuelve 124 en ese caso, como hace timeout
+# de coreutils, que en macOS no viene.
+#
+# Hace falta porque este guion no siempre se lanza desde una terminal: la pantalla de instalación de
+# la aplicación lo arranca como root con «do shell script … with administrator privileges», sin
+# entrada, sin salida a la vista y sin nadie delante. Una orden que en ese contexto se quede
+# esperando una respuesta que nadie va a dar no falla: se queda ahí, y con ella la pantalla de la
+# aplicación, para siempre y sin decir en qué paso. Un plazo convierte eso en un aviso.
+con_limite() {                                      # con_limite <segundos> <orden> [argumentos...]
+    local limite="$1"; shift
+    local pid pasados=0
+
+    "$@" &
+    pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        if (( pasados >= limite )); then
+            # El "Terminated: 15" lo escribe el propio shell al recoger el proceso, no la orden.
+            # Dentro de este bloque su stderr va a /dev/null y no ensucia el registro.
+            { kill -TERM "$pid" 2>/dev/null || true
+              sleep 1
+              kill -KILL "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            } 2>/dev/null
+            return 124
+        fi
+        sleep 1
+        pasados=$(( pasados + 1 ))
+    done
+
+    wait "$pid"
+}
 
 # ── Homebrew y el usuario que ha iniciado sesión ──────────────────────────────────────────────────
 #
@@ -831,7 +872,7 @@ if [[ $DESHACER -eq 1 ]]; then
     # contrario: si no se puede quitar una regla del cortafuegos, lo que hay que hacer es seguir
     # quitando el resto y decir qué ha quedado, no abortar y dejar el equipo a mitad de camino con
     # un servicio apuntando a una carpeta que ya no existe.
-    set +e
+    permitir_fallo
 
     echo
     echo "${AZUL}Desinstalar el servidor de JudoAdministración de este equipo${FIN}"
@@ -1340,7 +1381,12 @@ fi
 # esto —ellos instalan el .crt con preparar-puesto— y el servicio arranca igual.
 confiar_en_certificado() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
-        sudo security add-trusted-cert -d -r trustRoot \
+        # Con plazo: si el diálogo del llavero NO llega a aparecer —que es lo que pasa cuando el
+        # guion corre sin sesión gráfica delante, por ejemplo lanzado desde la propia aplicación o
+        # por SSH—, "security" no falla: se queda esperando una autorización que nadie va a dar, y
+        # la instalación entera se cuelga en el paso 5 sin un solo mensaje. Minuto y medio es de
+        # sobra para teclear una contraseña; pasado eso, es que no hay diálogo que teclear.
+        con_limite 90 sudo security add-trusted-cert -d -r trustRoot \
              -k /Library/Keychains/System.keychain "$CRT"
         return
     fi
@@ -1376,16 +1422,22 @@ else
     [[ "$SISTEMA" == "Darwin" ]] && \
         echo "   el sistema va a pedir la contraseña de administrador para el llavero"
 
-    # set +e alrededor: es el único bloque del guion al que se le permite fallar sin parar nada.
-    set +e
+    # Se le permite fallar sin parar nada: ver permitir_fallo.
+    permitir_fallo
     confiar_en_certificado
     RESULTADO_CONFIANZA=$?
-    set -e
+    volver_a_vigilar
 
     if [[ $RESULTADO_CONFIANZA -eq 0 ]]; then
         bien "certificado instalado en el almacén de confianza del sistema"
     elif [[ $RESULTADO_CONFIANZA -eq 2 ]]; then
         aviso "no sé dónde instalar certificados en este sistema; hazlo a mano (guía §4.2)"
+    elif [[ $RESULTADO_CONFIANZA -eq 124 ]]; then
+        aviso "el llavero del sistema no ha contestado en 90 segundos y he dejado de esperarlo"
+        aviso "pasa cuando el diálogo de autorización no puede salir (sin sesión gráfica delante)"
+        aviso "la instalación SIGUE: esto solo afecta a la aplicación de escritorio de este equipo"
+        aviso "para arreglarlo después, desde una terminal de este equipo:"
+        aviso "  $(orden_confianza_manual)"
     else
         aviso "no he podido instalarlo en el almacén de confianza (autorización denegada)"
         aviso "la instalación SIGUE: esto solo afecta a la aplicación de escritorio de este equipo"
@@ -1760,14 +1812,14 @@ PLIST
 # El servidor funciona sin esto —la propia aplicación tiene un botón para arrancar el servicio—, así
 # que se avisa, se dice cómo hacerlo a mano y se sigue hasta el resumen.
 instalar_arranque() {
-    set +e
+    permitir_fallo
     if [[ "$SISTEMA" == "Darwin" ]]; then
         instalar_launchd
     else
         instalar_systemd
     fi
     local codigo=$?
-    set -e
+    volver_a_vigilar
 
     if [[ $codigo -eq 0 ]]; then
         [[ "$SISTEMA" == "Darwin" ]] && bien "launchd: es.judo.api instalado y arrancado" \
