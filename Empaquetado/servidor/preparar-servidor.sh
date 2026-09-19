@@ -324,12 +324,17 @@ localizar_brew() {
 
 # "brew services" es el único que necesita el launchd del usuario; el resto de órdenes de brew van
 # con un sudo -u normal, que tiene menos cosas que puedan salir mal.
+# Las dos variables son solo para que el registro de la instalación se lea: sin ellas, brew suelta
+# en cada orden el aviso de "running through sudo, using user/* instead of gui/* domain" y la
+# cantinela de las pistas de entorno, y quien está instalando el servidor lo lee como si algo
+# hubiera ido mal. No va mal: el servicio queda igual en el launchd del usuario.
 brew_usuario() {
     localizar_brew || return 1
+    local entorno=(/usr/bin/env HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_SERVICES_NO_DOMAIN_WARNING=1)
     if [[ "${1:-}" == "services" ]]; then
-        en_sesion "$BREW" "$@"
+        en_sesion "${entorno[@]}" "$BREW" "$@"
     else
-        como_usuario "$BREW" "$@"
+        como_usuario "${entorno[@]}" "$BREW" "$@"
     fi
 }
 
@@ -351,7 +356,11 @@ localizar_pg() {
         BIN_PG="$carpeta"
         export PATH="$BIN_PG:$PATH"
         return 0
-    done < <(ls -d "$prefijo"/opt/postgresql@*/bin 2>/dev/null | sort -t@ -k2 -rn)
+    # El "|| true" no sobra: cuando todavía no hay ninguna carpeta postgresql@N, ls falla, y la
+    # sustitución de procesos es una subshell que hereda errtrace y la trampa de ERR. Sin él, un
+    # "aún no está instalado" —que aquí es lo normal— imprimía el mensajón de "el guion se ha
+    # parado en…" sin que el guion se hubiera parado en nada.
+    done < <(ls -d "$prefijo"/opt/postgresql@*/bin 2>/dev/null | sort -t@ -k2 -rn || true)
     return 1
 }
 
@@ -396,6 +405,45 @@ psql_super() {
         local)   psql "$@" ;;
         sesion)  como_usuario "${BIN_PG:+$BIN_PG/}psql" "$@" ;;
     esac
+}
+
+# Arrancar el servicio y aceptar conexiones no son la misma cosa. Entre una y otra hay un arranque
+# del servidor —y, la primerísima vez, la creación del clúster y la recuperación del último cierre—
+# que tarda unos segundos. Sin esperar, el guion preguntaba en el mismo instante en que "brew
+# services start" volvía, no le contestaba nadie y se rendía con un "está instalado pero no
+# responde" que era falso: bastaba con relanzarlo para que fuera bien.
+esperar_postgresql() {                              # esperar_postgresql <segundos>
+    local limite="${1:-30}" pasados=0
+    while :; do
+        if resolver_psql; then
+            (( pasados > 0 )) && bien "PostgreSQL ha tardado ${pasados}s en aceptar conexiones"
+            return 0
+        fi
+        (( pasados >= limite )) && return 1
+        sleep 1
+        pasados=$(( pasados + 1 ))
+    done
+}
+
+# Lo que hay que mirar cuando PostgreSQL está instalado y aun así no contesta. Se imprime antes de
+# rendirse porque quien instala el servidor no está delante de un terminal para ir probando: esto es
+# lo que hay que poder leer del registro de la instalación.
+diagnostico_postgresql() {
+    aviso "diagnóstico de PostgreSQL:"
+    if command -v "${BIN_PG:+$BIN_PG/}pg_isready" >/dev/null 2>&1; then
+        echo "     $(como_usuario "${BIN_PG:+$BIN_PG/}pg_isready" 2>&1 | head -2)"
+    fi
+    if [[ "$SISTEMA" == "Darwin" ]] && localizar_brew; then
+        brew_usuario services list 2>&1 | sed -n '1,6p' | sed 's/^/     /' || true
+        local registro
+        for registro in "$(brew_usuario --prefix 2>/dev/null)"/var/log/postgresql@*.log; do
+            [[ -f "$registro" ]] || continue
+            echo "     últimas líneas de $registro:"
+            tail -5 "$registro" 2>/dev/null | sed 's/^/       /' || true
+        done
+    elif command -v systemctl >/dev/null; then
+        systemctl status postgresql --no-pager 2>&1 | sed -n '1,8p' | sed 's/^/     /' || true
+    fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1006,18 +1054,52 @@ instalar_postgresql() {
 # darlo por no instalado, se busca donde lo deja Homebrew.
 localizar_pg || true
 
+RECIEN_INSTALADO=0
 if ! command -v psql >/dev/null; then
     if [[ $SIN_POSTGRESQL -eq 1 ]]; then
         fallo "PostgreSQL no está instalado y se ha pedido --sin-postgresql. Instálalo a mano (guía §3.1)."
     fi
     aviso "PostgreSQL no está instalado; instalando"
     instalar_postgresql
+    RECIEN_INSTALADO=1
 fi
 
-resolver_psql || fallo "PostgreSQL está instalado pero no responde.
+# Recién instalado se le da un minuto: además de arrancar, la primera vez crea el clúster. Si ya
+# estaba, con diez segundos sobra —o está levantado, o lo que le pasa no se arregla esperando.
+if [[ $RECIEN_INSTALADO -eq 1 ]]; then
+    aviso "esperando a que PostgreSQL acepte conexiones…"
+    ESPERA_PG=60
+else
+    ESPERA_PG=10
+fi
+
+if ! esperar_postgresql "$ESPERA_PG"; then
+    # Un segundo intento de arranque antes de darlo por perdido: en macOS "brew services start" a
+    # veces vuelve bien sin que launchd haya llegado a levantar el servicio.
+    if [[ "$SISTEMA" == "Darwin" ]] && localizar_brew; then
+        aviso "no responde; reintentando el arranque del servicio"
+        # La fórmula que toca, que no tiene por qué ser la 18: si el equipo ya traía un
+        # postgresql@15 parado, es a ése al que hay que darle al botón.
+        FORMULA_PG="postgresql@18"
+        [[ "$BIN_PG" =~ (postgresql@[0-9]+) ]] && FORMULA_PG="${BASH_REMATCH[1]}"
+        brew_usuario services restart "$FORMULA_PG" >/dev/null 2>&1 \
+            || brew_usuario services start "$FORMULA_PG" >/dev/null 2>&1 || true
+        esperar_postgresql 45 || true
+    elif command -v systemctl >/dev/null; then
+        aviso "no responde; reintentando el arranque del servicio"
+        sudo systemctl start postgresql >/dev/null 2>&1 || true
+        esperar_postgresql 30 || true
+    fi
+fi
+
+if [[ -z "$MODO_PSQL" ]]; then
+    diagnostico_postgresql
+    fallo "PostgreSQL está instalado pero no responde.
      Comprueba que el servicio está arrancado:
        Linux  → sudo systemctl status postgresql
-       macOS  → brew services list"
+       macOS  → brew services list
+     Y vuelve a lanzar el guion: lo ya hecho se respeta."
+fi
 
 VERSION_PG="$(psql_super -d postgres -tAc 'SHOW server_version;' | cut -d. -f1)"
 bien "PostgreSQL $VERSION_PG en marcha (psql: modo $MODO_PSQL)"
