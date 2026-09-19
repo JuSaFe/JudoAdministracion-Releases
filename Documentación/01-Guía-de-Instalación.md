@@ -736,7 +736,7 @@ lleva a otro sitio, si hiciera falta.
 |---|---|
 | `Images/logo.png` | El logo que encabeza **todos** los informes, los cuadros de combates y la pantalla de inicio de sesión |
 | `Images/sponsors.png` | La tira de patrocinadores del pie. **No viene ninguna**: mientras no se deje ahí, los informes se imprimen sin pie |
-| `Flags/ESP.png`, `Flags/ESP_VAL.png`, `Flags/ESP_VAL_ALC.png`… | Banderas por código, de lo más general a lo más concreto. Se usa la más concreta que exista, así que un club sin escudo propio sale con la bandera de su comunidad. Se actualizan solas y aparte de la aplicación (§7.5) |
+| `Flags/ESP.png`, `Flags/ESP_VAL.png`, `Flags/ESP_VAL_ALC.png`… | Banderas por código, de lo más general a lo más concreto. Se usa la más concreta que exista, así que un club sin escudo propio sale con la bandera de su comunidad. Se actualizan solas y aparte de la aplicación (§7.6) |
 
 Todo son **PNG**. Lo que hay en la carpeta manda sobre lo que la aplicación trae dentro, y **borrar
 un archivo devuelve el de fábrica**: no hay forma de dejar la instalación sin logo por equivocarse
@@ -1160,7 +1160,44 @@ Los paquetes se descargan de la
 [última release](https://github.com/JuSaFe/JudoAdministracion-Releases/releases/latest), y conviene
 comprobarlos con el `SHA256SUMS.txt` que va al lado: `sha256sum -c SHA256SUMS.txt`.
 
-### 7.3 La contraseña de judo_owner
+**En macOS, ojo con arrastrar el .app desde el Finder.** La configuración de ese equipo vive DENTRO
+del paquete, en `Contents/MacOS/appsettings.Local.json`, y sustituirlo desde el Finder la borra: el
+equipo pierde la dirección del servidor y, si es el anfitrión, la contraseña de `judo_api`. La forma
+correcta es la misma que usa la aplicación al actualizarse sola, que excluye ese archivo:
+
+```bash
+DMG=~/Downloads/JudoAdministracion-<versión>-osx-arm64.dmg
+MONTAJE="$(mktemp -d /tmp/judo-dmg-XXXXXX)"
+hdiutil attach -nobrowse -readonly -mountpoint "$MONTAJE" "$DMG"
+sudo rsync -a --delete --exclude appsettings.Local.json \
+    "$MONTAJE/JudoAdministracion.app/" /Applications/JudoAdministracion.app/
+hdiutil detach "$MONTAJE" && rmdir "$MONTAJE"
+sudo codesign --force --deep --sign - /Applications/JudoAdministracion.app
+sudo xattr -dr com.apple.quarantine /Applications/JudoAdministracion.app
+```
+
+Las dos últimas líneas no son opcionales en Apple Silicon: sin firma el sistema no ejecuta el
+binario, y con la cuarentena puesta pide confirmación al abrirlo.
+
+### 7.3 Cuando la aplicación se cierra y sigue en la misma versión
+
+La sustitución de la aplicación no la hace la aplicación —no puede: se está ejecutando—, sino un
+guion que se queda esperando a que se cierre. Ese guion corre sin ventana, así que deja lo que hace
+por escrito:
+
+| | Dónde |
+|---|---|
+| macOS | `~/Library/Logs/JudoAdministracion/actualizacion.log` (se abre con la Consola del sistema) |
+| Linux | `~/.judoadministracion-actualizacion.log` |
+
+Ahí están las tres versiones que importan: la que había instalada, la que trae el paquete descargado
+y la que queda al terminar. Si el guion no llega al final, además sale un diálogo del sistema
+diciéndolo; la aplicación se queda entera en la versión anterior y se puede seguir usando.
+
+Si el archivo **ni siquiera existe** después de un intento, es que el guion no ha llegado a
+ejecutarse, y entonces lo que toca es la sustitución a mano de §7.2.
+
+### 7.4 La contraseña de judo_owner
 
 Es la que aplica los cambios de esquema, y **solo se imprimió una vez**: al final de
 `preparar-servidor` (§3.3). No queda guardada en ningún archivo, a propósito.
@@ -1173,7 +1210,7 @@ En Windows ese botón pide además la contraseña del superusuario `postgres` (l
 al instalar PostgreSQL), porque ahí no hay forma de cambiar una contraseña sin conocer otra. En Linux
 y en macOS no pide nada.
 
-### 7.4 Tres cosas que conviene tener claras
+### 7.5 Tres cosas que conviene tener claras
 
 - **El servidor se actualiza primero.** Una aplicación nueva contra un servidor viejo puede pedir
   endpoints que no existen. Ya no depende de que alguien se acuerde: el servidor **rechaza el inicio
@@ -1186,7 +1223,7 @@ y en macOS no pide nada.
   medias. Si hay un evento activo o la API está dando servicio a la red, la aplicación avisa antes de
   empezar.
 
-### 7.5 Las banderas se actualizan aparte
+### 7.6 Las banderas se actualizan aparte
 
 Una bandera nueva —un club que estrena escudo, un país que compite aquí por primera vez— **no es una
 versión del programa**, y no espera a que salga una. Se publican como archivos sueltos en el
