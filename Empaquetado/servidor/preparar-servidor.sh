@@ -226,6 +226,20 @@ confirmar() {
 # llavero del sistema o los demonios de arranque abren un diálogo del sistema pidiendo la contraseña
 # de administrador, y cancelarlo devuelve error.
 al_fallar() {
+    # Desde dentro de una subshell, callada.
+    #
+    # Un $(orden) o un <(orden) abren una subshell que HEREDA esta trampa, y ahí un fallo previsto
+    # —un curl que no conecta porque el certificado aún no es de confianza, un ls que no encuentra
+    # nada porque todavía no está instalado— acababa imprimiendo "el guion se ha parado en…" sin
+    # que el guion se hubiera parado en nada: seguía hasta el final, pero quien lo leía ya había
+    # dado la instalación por rota.
+    #
+    # BASH_SUBSHELL y no BASHPID: el bash que trae macOS es el 3.2, y ahí BASHPID no existe —con
+    # set -u, la propia trampa reventaría justo cuando hace falta—. BASH_SUBSHELL está desde el 3.0
+    # y vale para los $(...) y los (...), que es donde pasa. Las sustituciones de procesos <(...)
+    # no lo incrementan, así que ésas llevan su propio "|| true" allí donde están.
+    [[ "${BASH_SUBSHELL:-0}" -gt 0 ]] && return 0
+
     echo >&2
     echo "${ROJO}El guion se ha parado en: $PASO_ACTUAL${FIN}" >&2
     if [[ "$SISTEMA" == "Darwin" ]]; then
@@ -426,7 +440,11 @@ localizar_brew() {
 # hubiera ido mal. No va mal: el servicio queda igual en el launchd del usuario.
 brew_usuario() {
     localizar_brew || return 1
-    local entorno=(/usr/bin/env HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_SERVICES_NO_DOMAIN_WARNING=1)
+    # NONINTERACTIVE porque brew pregunta "¿quieres continuar? [y/n]" y aquí no siempre hay quien
+    # conteste: lanzado desde la aplicación no hay terminal, y una pregunta sin respuesta es un
+    # cuelgue con toda la instalación detrás.
+    local entorno=(/usr/bin/env HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_SERVICES_NO_DOMAIN_WARNING=1
+                   NONINTERACTIVE=1)
     if [[ "${1:-}" == "services" ]]; then
         en_sesion "${entorno[@]}" "$BREW" "$@"
     else
@@ -1465,23 +1483,43 @@ fi
 # Así que aquí se avisa y se sigue. Lo que se pierde si esto no sale es una sola cosa, y está dicha:
 # la aplicación de escritorio DE ESTE equipo no se fiará del certificado. Los puestos no dependen de
 # esto —ellos instalan el .crt con preparar-puesto— y el servicio arranca igual.
+# Meter el certificado en el llavero del sistema de macOS pide DOS cosas a la vez, y ahí está todo
+# el problema:
+#
+#   · Permisos de root, porque /Library/Keychains/System.keychain es un archivo del sistema y hay
+#     que escribir en él. Sin ellos: «SecCertificateAddToKeychain: Write permissions error», y ahí
+#     no hay diálogo que valga: no pregunta, falla.
+#   · Una sesión gráfica, porque marcarlo como DE CONFIANZA es una operación autorizada y el sistema
+#     la pregunta con su propio diálogo, que tiene que poder dibujarse en algún sitio. Sin ella:
+#     «SecTrustSettingsSetTrustSettings: the authorization was denied since no user interaction was
+#     possible».
+#
+# Con sudo desde una terminal se tienen las dos y funciona. Lanzado desde la aplicación se es root
+# pero sin sesión, y falla lo segundo. Bajando a la sesión del usuario con sudo -u se tiene sesión
+# pero se deja de ser root, y entonces falla lo PRIMERO — que es lo que pasaba al cambiar una cosa
+# por la otra.
+#
+# «launchctl asuser» es lo que pone la sesión sin quitar los permisos: adopta el contexto del
+# usuario conservando las credenciales de quien llama. Por eso aquí NO lleva el «sudo -u» que sí
+# lleva en_sesion, que existe para brew, y brew necesita justo lo contrario.
 confiar_en_certificado() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
-        # En la sesión del usuario, NO con sudo, y ésa es toda la diferencia entre que funcione y
-        # que no.
-        #
-        # Meter un certificado en el llavero del SISTEMA es una operación autorizada: la pide el
-        # sistema con su propio diálogo, y ese diálogo tiene que poder dibujarse en algún sitio.
-        # Lanzado desde la pantalla de instalación de la aplicación, el guion es root dentro de una
-        # sesión de autorización sin interacción, y desde ahí no hay pantalla: "security" contesta
-        # «the authorization was denied since no user interaction was possible» y el certificado se
-        # queda sin instalar. Entrando en la sesión gráfica del usuario —que es lo mismo que hace
-        # falta para brew services— el diálogo sale donde tiene que salir y se puede contestar.
-        #
-        # Y con plazo igualmente: si aun así no aparece, "security" no falla, se queda esperando
-        # para siempre. Minuto y medio es de sobra para teclear una contraseña.
-        con_limite 90 en_sesion security add-trusted-cert -d -r trustRoot \
-             -k /Library/Keychains/System.keychain "$CRT"
+        local orden=(security add-trusted-cert -d -r trustRoot
+                     -k /Library/Keychains/System.keychain "$CRT")
+
+        # Si va a hacer falta sudo, que pida la contraseña AQUÍ. Dentro de con_limite la orden va a
+        # segundo plano, y un proceso en segundo plano que intenta leer del terminal se queda
+        # parado (SIGTTIN) hasta que se agote el plazo: noventa segundos de nada.
+        [[ $SOY_ROOT -eq 1 ]] || sudo -v 2>/dev/null || true
+
+        if [[ $SOY_ROOT -eq 1 && "$USUARIO_SESION" != "root" ]]; then
+            con_limite 90 launchctl asuser "$(id -u "$USUARIO_SESION")" "${orden[@]}" && return 0
+            aviso "por la sesión de $USUARIO_SESION no ha podido ser; lo intento directamente"
+        fi
+
+        # Y con plazo también: si el diálogo no llega a aparecer, "security" no falla, se queda
+        # esperando para siempre. Minuto y medio es de sobra para teclear una contraseña.
+        con_limite 90 como_admin "${orden[@]}"
         return
     fi
 
@@ -2015,7 +2053,11 @@ if [[ $SIN_SERVICIO -eq 0 ]]; then
     # Sin --cacert a propósito: si esto responde, es que el certificado del paso 5 está bien
     # instalado en el almacén del sistema y la aplicación de escritorio va a poder conectar. Es la
     # misma prueba de fuego que hace preparar-puesto en los puestos.
-    if RESPUESTA="$(curl -sf "https://localhost:$PUERTO/api/estado" 2>/dev/null)"; then
+    # El "|| true" va DENTRO de la sustitución y la comprobación se hace sobre el texto: curl -sf
+    # no escribe nada cuando falla, así que una respuesta vacía es exactamente "no ha contestado".
+    RESPUESTA="$(curl -sf "https://localhost:$PUERTO/api/estado" 2>/dev/null || true)"
+
+    if [[ -n "$RESPUESTA" ]]; then
         bien "el servicio responde y su certificado es de confianza aquí: $RESPUESTA"
     elif curl -sfk "https://localhost:$PUERTO/api/estado" >/dev/null 2>&1; then
         aviso "el servicio responde, pero su certificado no es de confianza en este equipo"
