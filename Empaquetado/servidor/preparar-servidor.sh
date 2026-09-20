@@ -280,6 +280,61 @@ permisos() { chmod "$@" 2>/dev/null || sudo chmod "$@"; }
 NECESITA_ROOT=0
 como_root() { if [[ $NECESITA_ROOT -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
 
+# Con permisos de administrador siempre, sea cual sea la forma en que se haya lanzado el guion.
+#
+# como_root de aquí arriba mira NECESITA_ROOT, que solo se pone en la instalación; --deshacer se
+# lanza muchas veces sin sudo y ahí valía cualquier cosa. Y hay dos operaciones que SIN root no dan
+# error sino algo peor: mienten. lsof, sin root, no ve los sockets de procesos de otros usuarios —o
+# sea que un "no hay nada escuchando en el 8443" puede querer decir "lo hay, pero es de root y no
+# te lo enseño"—, y kill contra un proceso ajeno devuelve "Operation not permitted".
+como_admin() { if [[ $SOY_ROOT -eq 1 ]]; then "$@"; else sudo "$@"; fi; }
+
+# Quién escucha en el puerto. Con permisos, por lo dicho arriba.
+quien_escucha() {                                   # quien_escucha [puerto]
+    como_admin lsof -ti "tcp:${1:-$PUERTO}" -sTCP:LISTEN 2>/dev/null || true
+}
+
+sigue_vivo() {                                      # sigue_vivo <pid>...
+    local pid
+    for pid in "$@"; do
+        # ps y no "kill -0": kill -0 contra un proceso de otro usuario falla por permisos, y eso se
+        # lee igual que "ya no está". Justo al revés de lo que hace falta saber.
+        ps -p "$pid" -o pid= >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# Un TERM, y si no se muere, un KILL.
+#
+# No es paranoia. La API es un servicio .NET y su cierre ordenado espera a soltar lo que tenga
+# abierto; cuando lo que había al otro lado ya no está —porque este mismo guion acaba de desinstalar
+# PostgreSQL, por ejemplo—, ese cierre no termina NUNCA. El proceso se queda vivo ignorando el TERM,
+# agarrado al puerto 8443, sin ningún launchd detrás al que pedirle cuentas, y aguantando tanto un
+# "pkill -f" como un "launchctl bootout" que responde "No such process". Un proceso del que no hay
+# manera de deshacerse si no es con un -9.
+matar_de_verdad() {                                 # matar_de_verdad <pid>...
+    local pid intento
+
+    [[ $# -eq 0 ]] && return 0
+
+    for pid in "$@"; do
+        como_admin kill -TERM "$pid" 2>/dev/null || true
+    done
+
+    for intento in $(seq 1 8); do
+        sigue_vivo "$@" || return 0
+        sleep 1
+    done
+
+    for pid in "$@"; do
+        como_admin kill -KILL "$pid" 2>/dev/null || true
+    done
+
+    sleep 1
+    sigue_vivo "$@" && return 1
+    return 0
+}
+
 # Ejecuta una orden con un plazo, y si se pasa la mata. Devuelve 124 en ese caso, como hace timeout
 # de coreutils, que en macOS no viene.
 #
@@ -587,12 +642,17 @@ quitar_servicio() {
 # desde el botón de la aplicación de escritorio, y entonces es un proceso suelto.
 parar_lo_que_escuche() {
     local pids
-    pids="$(lsof -ti "tcp:$PUERTO" -sTCP:LISTEN 2>/dev/null || true)"
+    pids="$(quien_escucha)"
 
     [[ -z "$pids" ]] && return 0
+    [[ $SIMULAR -eq 1 ]] && { resultado "pararía lo que escucha en el puerto $PUERTO ($pids)"; return 0; }
 
-    hacer_callado sudo kill $pids
-    resultado "parado lo que quedaba escuchando en el puerto $PUERTO"
+    if matar_de_verdad $pids; then
+        resultado "parado lo que quedaba escuchando en el puerto $PUERTO"
+    else
+        aviso "NO he podido parar lo que escucha en el puerto $PUERTO (pid $pids)"
+        aviso "  sudo kill -9 $pids"
+    fi
 }
 
 volcar_base_datos() {
@@ -1407,12 +1467,20 @@ fi
 # esto —ellos instalan el .crt con preparar-puesto— y el servicio arranca igual.
 confiar_en_certificado() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
-        # Con plazo: si el diálogo del llavero NO llega a aparecer —que es lo que pasa cuando el
-        # guion corre sin sesión gráfica delante, por ejemplo lanzado desde la propia aplicación o
-        # por SSH—, "security" no falla: se queda esperando una autorización que nadie va a dar, y
-        # la instalación entera se cuelga en el paso 5 sin un solo mensaje. Minuto y medio es de
-        # sobra para teclear una contraseña; pasado eso, es que no hay diálogo que teclear.
-        con_limite 90 sudo security add-trusted-cert -d -r trustRoot \
+        # En la sesión del usuario, NO con sudo, y ésa es toda la diferencia entre que funcione y
+        # que no.
+        #
+        # Meter un certificado en el llavero del SISTEMA es una operación autorizada: la pide el
+        # sistema con su propio diálogo, y ese diálogo tiene que poder dibujarse en algún sitio.
+        # Lanzado desde la pantalla de instalación de la aplicación, el guion es root dentro de una
+        # sesión de autorización sin interacción, y desde ahí no hay pantalla: "security" contesta
+        # «the authorization was denied since no user interaction was possible» y el certificado se
+        # queda sin instalar. Entrando en la sesión gráfica del usuario —que es lo mismo que hace
+        # falta para brew services— el diálogo sale donde tiene que salir y se puede contestar.
+        #
+        # Y con plazo igualmente: si aun así no aparece, "security" no falla, se queda esperando
+        # para siempre. Minuto y medio es de sobra para teclear una contraseña.
+        con_limite 90 en_sesion security add-trusted-cert -d -r trustRoot \
              -k /Library/Keychains/System.keychain "$CRT"
         return
     fi
@@ -1446,7 +1514,8 @@ if [[ $SIN_CONFIANZA -eq 1 ]]; then
     aviso "si este equipo ejecuta la aplicación, no podrá conectarse a su propio servidor"
 else
     [[ "$SISTEMA" == "Darwin" ]] && \
-        echo "   el sistema va a pedir la contraseña de administrador para el llavero"
+        echo "   el sistema va a pedir la contraseña de administrador para el llavero," \
+             "en la sesión de $USUARIO_SESION"
 
     # Se le permite fallar sin parar nada: ver permitir_fallo.
     permitir_fallo
@@ -1555,9 +1624,10 @@ liberar_puerto_propio() {
         hacer_callado_siempre como_root systemctl stop judo-api || true
     fi
 
-    # Y lo que quede suelto: la API se puede haber lanzado desde el botón de la aplicación, y
-    # entonces no es un servicio del sistema sino un proceso normal.
-    pids="$(lsof -ti "tcp:$PUERTO" -sTCP:LISTEN 2>/dev/null || true)"
+    # Y lo que quede suelto: la API se puede haber lanzado desde el botón de la aplicación, o
+    # haberla dejado atrás el paso 7 de una instalación anterior que no llegó al final. Entonces no
+    # es un servicio del sistema sino un proceso normal, y de nadie.
+    pids="$(quien_escucha)"
 
     for pid in $pids; do
         # comm= da la ruta del ejecutable y args= la línea de órdenes entera. Se miran las dos: la
@@ -1567,7 +1637,7 @@ liberar_puerto_propio() {
         orden="$(ps -p "$pid" -o args= 2>/dev/null || true)"
 
         if [[ "$duenio" == *JudoAdministracion* || "$orden" == *JudoAdministracion* ]]; then
-            hacer_callado_siempre como_root kill "$pid" || true
+            matar_de_verdad "$pid" || true
         else
             aviso "el puerto lo tiene ${duenio:-un proceso desconocido} (pid $pid), que no es de esta aplicación"
         fi
@@ -1577,7 +1647,7 @@ liberar_puerto_propio() {
     # acaba de mandar un TERM tarda otro en cerrarlo. Preguntar en el acto diría que sigue ocupado.
     local intento
     for intento in $(seq 1 10); do
-        lsof -nP -iTCP:"$PUERTO" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+        [[ -z "$(quien_escucha)" ]] && return 0
         sleep 1
     done
 
@@ -1597,7 +1667,7 @@ else
     # Si algo ocupa ya el puerto, el servicio que vamos a lanzar no podrá escuchar y la espera de
     # abajo acabaría en un "no llegó a responder" que no dice cuál es el problema. El caso típico es
     # tener el servicio ya instalado y en marcha de una ejecución anterior.
-    if command -v lsof >/dev/null && lsof -nP -iTCP:"$PUERTO" -sTCP:LISTEN >/dev/null 2>&1; then
+    if command -v lsof >/dev/null && [[ -n "$(quien_escucha)" ]]; then
         aviso "el puerto $PUERTO está ocupado; compruebo si es el servicio de esta aplicación"
 
         if liberar_puerto_propio; then
@@ -1634,9 +1704,14 @@ else
     PID_LANZADO=$!
 
     # Si el guion aborta a partir de aquí, el servicio no debe quedarse suelto en segundo plano.
+    # El TERM solo no basta, y es exactamente aquí donde nace el proceso del que luego no hay
+    # manera de deshacerse: si este guion se para a partir de esta línea y la API se queda
+    # ignorando el TERM, lo que queda es un JudoAdministracion.Api de root, sin launchd detrás,
+    # ocupando el 8443 hasta que alguien lo mate con un -9 — y la instalación siguiente no puede
+    # ni empezar el paso 7.
     detener_inicializacion() {
         como_root pkill -f "$BINARIO" 2>/dev/null || true
-        kill "$PID_LANZADO" 2>/dev/null || true
+        matar_de_verdad "$PID_LANZADO" $(quien_escucha) >/dev/null 2>&1 || true
         wait "$PID_LANZADO" 2>/dev/null || true
     }
     trap detener_inicializacion EXIT
