@@ -519,6 +519,12 @@ hacer_callado() {
     "$@" >/dev/null 2>&1
 }
 
+# Callar la salida sin mirar --simular: para los sitios de la INSTALACIÓN, donde esa opción no
+# pinta nada —solo existe para --deshacer— y saltarse la orden dejaría el trabajo a medias.
+hacer_callado_siempre() {
+    "$@" >/dev/null 2>&1
+}
+
 # «✓ hecho» cuando se ha hecho, «[simulado] hecho» cuando solo se ha simulado. Un ✓ en modo
 # simulación es una mentira, y es justo el modo en el que hay que poder confiar en lo que se lee.
 resultado() {
@@ -532,12 +538,32 @@ resultado() {
 PLIST_LAUNCHD="/Library/LaunchDaemons/es.judo.api.plist"
 UNIDAD_SYSTEMD="/etc/systemd/system/judo-api.service"
 
+# Si launchd tiene cargado el trabajo, independientemente de que su .plist siga en el disco.
+servicio_launchd_cargado() {
+    sudo -n launchctl print system/es.judo.api >/dev/null 2>&1 \
+        || launchctl print system/es.judo.api >/dev/null 2>&1
+}
+
 quitar_servicio() {
     if [[ "$SISTEMA" == "Darwin" ]]; then
-        if [[ -f "$PLIST_LAUNCHD" ]]; then
+        # Se mira si está CARGADO, no si existe el archivo.
+        #
+        # launchd y el .plist son dos cosas distintas: una vez cargado, el trabajo sigue cargado
+        # aunque el archivo desaparezca. Si un --deshacer anterior llegó a borrar el archivo pero no
+        # a descargar el trabajo, a partir de ahí este bloque decía «no había servicio launchd
+        # instalado» y se iba tan tranquilo — dejando una API corriendo como root y con KeepAlive,
+        # que vuelve a levantarse cada vez que la matas. La instalación siguiente se la encuentra
+        # ocupando el puerto 8443 y no hay forma de adivinar de dónde ha salido.
+        if servicio_launchd_cargado || [[ -f "$PLIST_LAUNCHD" ]]; then
             hacer_callado sudo launchctl bootout system/es.judo.api
             hacer sudo rm -f "$PLIST_LAUNCHD"
-            resultado "servicio launchd es.judo.api quitado"
+
+            if [[ $SIMULAR -eq 0 ]] && servicio_launchd_cargado; then
+                aviso "launchd NO ha soltado es.judo.api. Hazlo a mano o quedará escuchando:"
+                aviso "  sudo launchctl bootout system/es.judo.api"
+            else
+                resultado "servicio launchd es.judo.api quitado"
+            fi
         else
             igual "no había servicio launchd instalado"
         fi
@@ -1511,6 +1537,53 @@ else
     fi
 fi
 
+# Libera el puerto SI lo que lo ocupa es el servicio de esta aplicación, y devuelve error si no.
+#
+# Antes, encontrarse el puerto ocupado paraba la instalación y mandaba al técnico a teclear un
+# bootout. Eso ya era incómodo en una terminal; lanzado desde la pantalla de instalación de la
+# aplicación es directamente un callejón sin salida, porque no hay terminal donde teclear nada. Y el
+# caso que se da de verdad no es un programa ajeno: es el es.judo.api de este mismo equipo, que se
+# quedó cargado en launchd de una instalación anterior. Ése es nuestro y lo paramos nosotros.
+#
+# Lo que NO se toca es lo que no sea nuestro: si en el 8443 hay otra cosa, se dice y se para aquí.
+liberar_puerto_propio() {
+    local pids pid duenio orden
+
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        hacer_callado_siempre como_root launchctl bootout system/es.judo.api || true
+    elif command -v systemctl >/dev/null; then
+        hacer_callado_siempre como_root systemctl stop judo-api || true
+    fi
+
+    # Y lo que quede suelto: la API se puede haber lanzado desde el botón de la aplicación, y
+    # entonces no es un servicio del sistema sino un proceso normal.
+    pids="$(lsof -ti "tcp:$PUERTO" -sTCP:LISTEN 2>/dev/null || true)"
+
+    for pid in $pids; do
+        # comm= da la ruta del ejecutable y args= la línea de órdenes entera. Se miran las dos: la
+        # API es un ejecutable propio y basta con la primera, pero si algún día se lanzara como
+        # "dotnet JudoAdministracion.Api.dll", comm= diría "dotnet" y sólo args= lo delataría.
+        duenio="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+        orden="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+
+        if [[ "$duenio" == *JudoAdministracion* || "$orden" == *JudoAdministracion* ]]; then
+            hacer_callado_siempre como_root kill "$pid" || true
+        else
+            aviso "el puerto lo tiene ${duenio:-un proceso desconocido} (pid $pid), que no es de esta aplicación"
+        fi
+    done
+
+    # launchd tarda un momento en soltar el socket después del bootout, y un proceso al que se le
+    # acaba de mandar un TERM tarda otro en cerrarlo. Preguntar en el acto diría que sigue ocupado.
+    local intento
+    for intento in $(seq 1 10); do
+        lsof -nP -iTCP:"$PUERTO" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+        sleep 1
+    done
+
+    return 1
+}
+
 # ── 7. Esquema, datos básicos y disparadores ───────────────────────────────────────────────────────
 
 paso "7/10  Esquema y datos básicos"
@@ -1525,11 +1598,21 @@ else
     # abajo acabaría en un "no llegó a responder" que no dice cuál es el problema. El caso típico es
     # tener el servicio ya instalado y en marcha de una ejecución anterior.
     if command -v lsof >/dev/null && lsof -nP -iTCP:"$PUERTO" -sTCP:LISTEN >/dev/null 2>&1; then
-        fallo "Ya hay algo escuchando en el puerto $PUERTO. Párala antes de inicializar:
+        aviso "el puerto $PUERTO está ocupado; compruebo si es el servicio de esta aplicación"
+
+        if liberar_puerto_propio; then
+            bien "era el servicio de esta aplicación, de una instalación anterior: parado"
+        else
+            fallo "Hay algo escuchando en el puerto $PUERTO que no es el servicio de esta
+     aplicación, o no he conseguido pararlo. Míralo con:
+       macOS  → sudo lsof -nP -iTCP:$PUERTO -sTCP:LISTEN
+       Linux  → sudo ss -lptn 'sport = :$PUERTO'
+     Y párala antes de volver a lanzar esto:
        Linux  → sudo systemctl stop judo-api
        macOS  → sudo launchctl bootout system/es.judo.api
      Y si es un proceso lanzado a mano:
        pkill -f JudoAdministracion.Api"
+        fi
     fi
 
     TABLAS_ANTES="$(psql_super -d "$BD" -tAc \
