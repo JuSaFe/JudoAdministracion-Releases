@@ -34,6 +34,7 @@ La única que **impone condiciones de uso** es QuestPDF; está detallada al fina
 | Dapper | 2.1.66 | Apache‑2.0 | Exige conservar el `NOTICE` y declarar los cambios si se modifica |
 | Npgsql | 10.0.1 | PostgreSQL License | Equivalente a BSD de dos cláusulas |
 | PDFsharp | 6.2.1 | MIT | |
+| QRCoder | 1.8.0 | MIT | Los códigos QR de las acreditaciones. Se usa **solo** `PngByteQRCode`, que escribe el PNG por su cuenta: la clase `QRCode` del paquete devuelve un `Bitmap` y arrastra `System.Drawing.Common`, que en Linux necesita libgdiplus |
 | **QuestPDF** | 2026.7.1 | **Dual: Community MIT / Professional / Enterprise** | Ver §3 |
 
 ### Compartido (`JudoAdministracion.Shared`)
