@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("servidor", "puesto", "marcador", "pantalla")]
+    [ValidateSet("servidor", "puesto")]
     [string] $Rol,
     [string] $Ip,
     [string] $Interfaz,                              # nombre del adaptador (Get-NetAdapter)
@@ -80,14 +80,12 @@ if (-not $Simular) {
 
 # ── Rangos del plan de direcciones ────────────────────────────────────────────────────────────────
 
-function RangoDesde ($r) { switch ($r) { "servidor" {3} "puesto" {5} "marcador" {10} "pantalla" {20} } }
-function RangoHasta  ($r) { switch ($r) { "servidor" {3} "puesto" {9} "marcador" {19} "pantalla" {29} } }
+function RangoDesde ($r) { switch ($r) { "servidor" {3} "puesto" {5} } }
+function RangoHasta  ($r) { switch ($r) { "servidor" {3} "puesto" {9} } }
 function QueEs ($r) {
     switch ($r) {
         "servidor" { "Servidor: PostgreSQL y la API" }
         "puesto"   { "Puesto de administracion: la aplicacion de escritorio" }
-        "marcador" { "Marcador de tatami" }
-        "pantalla" { "Pantalla de visualizacion" }
     }
 }
 
@@ -328,14 +326,10 @@ if (-not $Rol) {
     Write-Host ""
     Write-Host ("     1) {0,-30} {1}" -f "$Red.5 - $Red.9",   (QueEs "puesto"))
     Write-Host ("     2) {0,-30} {1}" -f "$Red.3",            (QueEs "servidor"))
-    Write-Host ("     3) {0,-30} {1}" -f "$Red.10 - $Red.19", (QueEs "marcador"))
-    Write-Host ("     4) {0,-30} {1}" -f "$Red.20 - $Red.29", (QueEs "pantalla"))
     Write-Host ""
     switch (Read-Host "   Numero [1-4]") {
         "1" { $Rol = "puesto" }
         "2" { $Rol = "servidor" }
-        "3" { $Rol = "marcador" }
-        "4" { $Rol = "pantalla" }
         default { Fallo "No es un numero de la lista." }
     }
 }

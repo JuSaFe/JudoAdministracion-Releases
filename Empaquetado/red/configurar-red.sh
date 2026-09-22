@@ -42,7 +42,7 @@ ayuda() {
     cat <<'AYUDA'
 Configura la red de un equipo para la competición (y la deshace al terminar).
 
-  --rol ROL           servidor | puesto | marcador | pantalla
+  --rol ROL           servidor | puesto
   --ip DIRECCIÓN      IP fija a poner (si no, se ofrece la que toca según el rol)
   --interfaz NOMBRE   Interfaz de red a configurar (si no, se pregunta)
 
@@ -418,19 +418,17 @@ paso "2/6  Papel de este equipo en la competición"
 # bash 3.2, que es de 2007 y no los tiene, y aquí interesa funcionar con el bash que hay en el equipo
 # y no obligar a instalar otro.
 rango_desde() {
-    case "$1" in servidor) echo 3 ;; puesto) echo 5 ;; marcador) echo 10 ;; pantalla) echo 20 ;;
+    case "$1" in servidor) echo 3 ;; puesto) echo 5 ;;
                  *) return 1 ;; esac
 }
 rango_hasta() {
-    case "$1" in servidor) echo 3 ;; puesto) echo 9 ;; marcador) echo 19 ;; pantalla) echo 29 ;;
+    case "$1" in servidor) echo 3 ;; puesto) echo 9 ;;
                  *) return 1 ;; esac
 }
 que_es() {
     case "$1" in
         servidor) echo "Servidor: PostgreSQL y la API" ;;
         puesto)   echo "Puesto de administración: la aplicación de escritorio" ;;
-        marcador) echo "Marcador de tatami" ;;
-        pantalla) echo "Pantalla de visualización" ;;
         *)        return 1 ;;
     esac
 }
@@ -442,20 +440,16 @@ if [[ -z "$ROL" ]]; then
     # acentos, y printf cuenta bytes, así que padearlos descuadraría la columna.
     printf '     1) %-30s %s\n' "$RED.5 - $RED.9"   "$(que_es puesto)"
     printf '     2) %-30s %s\n' "$RED.3"            "$(que_es servidor)"
-    printf '     3) %-30s %s\n' "$RED.10 - $RED.19" "$(que_es marcador)"
-    printf '     4) %-30s %s\n' "$RED.20 - $RED.29" "$(que_es pantalla)"
     echo
     read -r -p "   Número [1-4]: " eleccion
     case "$eleccion" in
         1) ROL="puesto" ;;
         2) ROL="servidor" ;;
-        3) ROL="marcador" ;;
-        4) ROL="pantalla" ;;
         *) fallo "No es un número de la lista." ;;
     esac
 fi
 
-que_es "$ROL" >/dev/null || fallo "Rol desconocido: $ROL (servidor, puesto, marcador o pantalla)."
+que_es "$ROL" >/dev/null || fallo "Rol desconocido: $ROL (servidor, puesto)."
 bien "$(que_es "$ROL")"
 
 # ── 3. Dirección ──────────────────────────────────────────────────────────────────────────────────

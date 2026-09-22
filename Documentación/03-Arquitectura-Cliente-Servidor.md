@@ -297,10 +297,15 @@ mano, y por eso el `appsettings.Local.json` del anfitrión lleva cadena de conex
 | **2** | Eventos, participantes, pesaje, sorteo, combates, informes, tiempo real | Migrado |
 | **3** | Las pantallas del escritorio que todavía piden `DbConnectionFactory` | **Pendiente** |
 
-La fase 3 es la que sostiene todo lo de esta sección. Las pantallas implicadas son las que en
-`MainWindowViewModel` llaman a `FabricaDirecta()`: eventos, participantes, pesaje, sorteo y combates
-—que ya tienen su endpoint y lo usan, pero conservan la conexión directa para lo que aún no ha
-pasado—, más los datos maestros y el alta de usuarios descritos arriba.
+La fase 3 es la que sostiene todo lo de esta sección. Participantes, pesaje, sorteo y combates ya
+van enteros por la API y funcionan en cualquier puesto. Lo que queda es:
+
+- En **Eventos**, el formulario de evento (nuevo y editar), *Exportar / Importar* y *Generar
+  ejemplos*. El listado, activar y eliminar ya van por la API, así que la sección abre en un puesto
+  y esas acciones salen apagadas con el motivo en la ayuda (`EventsViewModel.PuedeConfigurar`,
+  `EventsListViewModel.HayBaseDeDatos`).
+- El diseño de los informes PDF, que es el único que sigue llamando a `FabricaDirecta()`.
+- Los datos maestros y el alta de usuarios descritos arriba.
 
 **Cuando se cierre la fase 3 desaparecen tres cosas a la vez**, y ése es el modo de saber que está
 terminada:
