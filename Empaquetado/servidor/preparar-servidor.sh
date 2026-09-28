@@ -40,6 +40,10 @@ CARPETA_ASSETS="/opt/judoadministracion-assets"
 DIR_APP=""
 SUPERUSUARIO="postgres"
 PUERTO=8443
+# La red de los entrenadores: la segunda tarjeta del servidor, la que va a su router. El servicio de
+# entrenadores escucha ahí, en el 80 (ver Servidor:UrlEntrenadores y la documentación 04).
+SUBRED_ENTRENADORES="192.168.0.0/24"
+PUERTO_ENTRENADORES=80
 
 CLAVE_OWNER=""
 CLAVE_API=""
@@ -485,6 +489,28 @@ leer_json() {                                       # leer_json <archivo> <propi
     sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\(.*\)\".*/\1/p" "$1" | head -1
 }
 
+# Cifrar la contraseña de la base de datos para ESTE equipo antes de escribirla en un
+# appsettings.Local.json. Lo hace el propio servicio (JudoAdministracion.Api --proteger), que es
+# quien la va a descifrar, para que el formato lo decida un solo sitio (Seguridad/SecretoLocal). La
+# contraseña va por la entrada estándar y no como argumento, para que no se vea en la lista de
+# procesos.
+#
+# Lo que ya viene cifrado pasa sin tocar: una segunda ejecución recupera la contraseña de la
+# configuración anterior, y cifrarla otra vez la dejaría ilegible. Y si no se puede cifrar, se
+# devuelve tal cual: el servicio cifra su propia configuración al arrancar, así que eso solo retrasa
+# el cifrado un arranque. Quien llama decide si merece un aviso.
+proteger() {                                        # proteger <texto>
+    local cifrado
+    if [[ "$1" == cifrado:* ]]; then printf '%s' "$1"; return 0; fi
+    if [[ -x "$BINARIO" ]] \
+       && cifrado="$(printf '%s' "$1" | "$BINARIO" --proteger 2>/dev/null)" \
+       && [[ "$cifrado" == cifrado:* ]]; then
+        printf '%s' "$cifrado"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 # ── psql con superusuario ─────────────────────────────────────────────────────────────────────────
 # Tres formas según el sistema, resueltas una vez:
 #   · psql -U postgres          instalador de EDB, Postgres.app, o un clúster con ese rol
@@ -906,6 +932,7 @@ quitar_cortafuegos() {
     if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
         hacer_callado sudo ufw delete allow proto tcp from "$SUBRED" to any port "$PUERTO"
         hacer_callado sudo ufw delete deny 5432/tcp
+        hacer_callado sudo ufw delete allow proto tcp from "$SUBRED_ENTRENADORES" to any port "$PUERTO_ENTRENADORES"
         resultado "reglas de ufw quitadas"
         return
     fi
@@ -915,6 +942,8 @@ quitar_cortafuegos() {
             "rule family=ipv4 source address=$SUBRED port port=$PUERTO protocol=tcp accept"
         hacer_callado sudo firewall-cmd --permanent --remove-rich-rule \
             "rule family=ipv4 port port=5432 protocol=tcp drop"
+        hacer_callado sudo firewall-cmd --permanent --remove-rich-rule \
+            "rule family=ipv4 source address=$SUBRED_ENTRENADORES port port=$PUERTO_ENTRENADORES protocol=tcp accept"
         hacer_callado sudo firewall-cmd --reload
         resultado "reglas de firewalld quitadas"
         return
@@ -1596,7 +1625,7 @@ escribir_configuracion() {                          # escribir_configuracion <us
         "Url": "https://0.0.0.0:$PUERTO",
         "CertificadoPfx": "$(basename "$PFX")",
         "CertificadoPassword": "$CLAVE_PFX",
-        "ConnectionString": "Host=localhost;Port=5432;Database=$BD;Username=$1;Password=$2",
+        "ConnectionString": "Host=localhost;Port=5432;Database=$BD;Username=$1;Password=$(proteger "$2")",
         "ClaveFirmaTokens": "$CLAVE_TOKENS",
         "HorasValidezToken": 16,
         "IpsAnfitrion": [],
@@ -1849,6 +1878,12 @@ elif [[ -z "$CLAVE_API" ]]; then
 else
     CONFIG_APP="$DIR_APP/appsettings.Local.json"
 
+    # Cifrada aquí sí o sí importa: este archivo queda de solo lectura para la aplicación (ver abajo),
+    # así que ella no podrá cifrarlo por su cuenta como hace el servicio con el suyo.
+    CLAVE_API_APP="$(proteger "$CLAVE_API")"
+    [[ "$CLAVE_API_APP" == cifrado:* ]] \
+        || aviso "no he podido cifrar la contraseña de judo_api: queda en claro en $CONFIG_APP"
+
     # ApiBaseUrl con localhost y no con el nombre del servidor: es exactamente lo que le identifica
     # como anfitrión. Y la cadena de conexión va con judo_api, el mismo rol con el que corre el
     # servicio: las pantallas que todavía no han pasado por la API solo hacen consultas y altas, y
@@ -1868,7 +1903,7 @@ else
         "Ver Documentación/01-Guía-de-Instalación.md, §5."
     ],
     "ApiBaseUrl": "https://localhost:$PUERTO",
-    "ConnectionString": "Host=localhost;Port=5432;Database=$BD;Username=judo_api;Password=$CLAVE_API",
+    "ConnectionString": "Host=localhost;Port=5432;Database=$BD;Username=judo_api;Password=$CLAVE_API_APP",
     "RutaApi": "$DIR_SERVICIO"
 }
 JSON
@@ -1901,7 +1936,8 @@ configurar_cortafuegos() {
         # PostgreSQL solo se usa desde el propio servidor. Un DENY explícito para que quede escrito,
         # aunque de fábrica ya escuche solo en localhost.
         sudo ufw deny 5432/tcp >/dev/null
-        bien "ufw: $PUERTO/tcp abierto a $SUBRED, 5432/tcp cerrado"
+        sudo ufw allow proto tcp from "$SUBRED_ENTRENADORES" to any port "$PUERTO_ENTRENADORES" >/dev/null
+        bien "ufw: $PUERTO/tcp abierto a $SUBRED, $PUERTO_ENTRENADORES/tcp a $SUBRED_ENTRENADORES (entrenadores), 5432/tcp cerrado"
         return
     fi
 
@@ -1910,8 +1946,10 @@ configurar_cortafuegos() {
             "rule family=ipv4 source address=$SUBRED port port=$PUERTO protocol=tcp accept" >/dev/null
         sudo firewall-cmd --permanent --add-rich-rule \
             "rule family=ipv4 port port=5432 protocol=tcp drop" >/dev/null
+        sudo firewall-cmd --permanent --add-rich-rule \
+            "rule family=ipv4 source address=$SUBRED_ENTRENADORES port port=$PUERTO_ENTRENADORES protocol=tcp accept" >/dev/null
         sudo firewall-cmd --reload >/dev/null
-        bien "firewalld: $PUERTO/tcp abierto a $SUBRED, 5432/tcp cerrado"
+        bien "firewalld: $PUERTO/tcp abierto a $SUBRED, $PUERTO_ENTRENADORES/tcp a $SUBRED_ENTRENADORES (entrenadores), 5432/tcp cerrado"
         return
     fi
 
@@ -1970,6 +2008,10 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+# El servicio de entrenadores, que arranca la API como hijo suyo, escucha en el puerto 80, y en Linux
+# un usuario normal no puede abrir un puerto por debajo del 1024. Este permiso, y solo este, lo hereda
+# el hijo (ver Api/Entrenadores/SupervisorEntrenadores).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

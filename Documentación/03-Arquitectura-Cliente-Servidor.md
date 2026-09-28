@@ -42,6 +42,7 @@ Tres reglas que explican casi todo lo demás:
 | Proceso | Proyecto | Dónde corre |
 |---|---|---|
 | Servicio (API) | `JudoAdministracion.Api` | Solo el servidor `192.168.2.3` |
+| Servicio de entrenadores | `JudoAdministracion.Entrenadores` | El servidor, en `192.168.0.3`. Lo arranca la API como proceso hijo (ver la [04](04-Acceso-Entrenadores.md)) |
 | Aplicación de escritorio | `JudoAdministracion.csproj` (raíz) | Puestos `.5`–`.9` y el anfitrión |
 | Cliente HTTP + WebSocket | `JudoAdministracion.Client` | Dentro de la aplicación |
 | Modelos y contratos compartidos | `JudoAdministracion.Shared` | Dentro de los dos |
@@ -112,6 +113,7 @@ versión nueva. Lo demás sale del `appsettings.json` que trae el paquete.
 | `HorasValidezToken` | 16 por defecto: una jornada larga sin volver a pedir la contraseña | sí |
 | `IpsAnfitrion` | Direcciones que cuentan como anfitrión además de la propia máquina (§3.3) | sí |
 | `InicializarBaseDeDatos` | §2.1 | sí |
+| `AccesoEntrenadores` · `UrlEntrenadores` · `UrlPublicaEntrenadores` | El servicio de entrenadores (guía 04, §7) | sí |
 | `SoloMigrar` | §2.1. Solo por variable de entorno, nunca en el archivo | no |
 
 **El archivo local se reescribe en cada actualización, no se copia.** Arrastrarlo tal cual tenía un

@@ -152,6 +152,27 @@ function LeerJson ($ruta, $propiedad) {
     return $null
 }
 
+# Cifrar la contrasena de la base de datos para ESTE equipo antes de escribirla en un
+# appsettings.Local.json. Lo hace el propio servicio (JudoAdministracion.Api.exe --proteger), que es
+# quien la va a descifrar, para que el formato lo decida un solo sitio (Seguridad/SecretoLocal). En
+# Windows es DPAPI con ambito de equipo. La contrasena va por la entrada estandar y no como
+# argumento, para que no se vea en la lista de procesos.
+#
+# Lo que ya viene cifrado pasa sin tocar: una segunda ejecucion recupera la contrasena de la
+# configuracion anterior, y cifrarla otra vez la dejaria ilegible. Y si no se puede cifrar, se
+# devuelve tal cual: el servicio cifra su propia configuracion al arrancar, asi que eso solo retrasa
+# el cifrado un arranque. Quien llama decide si merece un aviso.
+function Proteger ([string]$Texto) {
+    if ($Texto -like 'cifrado:*') { return $Texto }
+    if (-not (Test-Path $binario)) { return $Texto }
+    try {
+        $cifrado = (($Texto | & $binario --proteger 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -eq 0 -and $cifrado -like 'cifrado:*') { return $cifrado }
+    }
+    catch { }
+    return $Texto
+}
+
 # Se instala en Program Files y se registra una tarea del sistema: hace falta elevación.
 $identidad = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identidad)
@@ -612,7 +633,7 @@ if ($Deshacer) {
 
     Paso "6/8  Cortafuegos"
 
-    $reglas = @('JudoAdministracion-Api', 'JudoAdministracion-PostgreSQL-Bloqueado')
+    $reglas = @('JudoAdministracion-Api', 'JudoAdministracion-PostgreSQL-Bloqueado', 'JudoAdministracion-Entrenadores')
     $quitadas = 0
     foreach ($nombreRegla in $reglas) {
         if (Get-NetFirewallRule -Name $nombreRegla -ErrorAction SilentlyContinue) {
@@ -1322,7 +1343,7 @@ function EscribirConfiguracion {
         "Url": "https://0.0.0.0:$Puerto",
         "CertificadoPfx": "$Nombre.pfx",
         "CertificadoPassword": "$ClavePfx",
-        "ConnectionString": "Host=localhost;Port=5432;Database=$Bd;Username=$Usuario;Password=$Clave",
+        "ConnectionString": "Host=localhost;Port=5432;Database=$Bd;Username=$Usuario;Password=$(Proteger $Clave)",
         "ClaveFirmaTokens": "$script:claveTokens",
         "HorasValidezToken": 16,
         "IpsAnfitrion": [],
@@ -1524,6 +1545,13 @@ else {
     # como anfitrion. Y la cadena de conexion va con judo_api, el mismo rol con el que corre el
     # servicio: las pantallas que todavia no han pasado por la API solo hacen consultas y altas, y
     # ninguna toca el esquema, asi que no hay motivo para darle judo_owner a un programa de escritorio.
+    #
+    # Cifrada aqui si o si importa: la aplicacion no tiene permiso para reescribir este archivo, asi
+    # que no podra cifrarlo por su cuenta como hace el servicio con el suyo.
+    $claveApiApp = Proteger $ClaveApi
+    if ($claveApiApp -notlike 'cifrado:*') {
+        Aviso "no he podido cifrar la contrasena de judo_api: queda en claro en $configApp"
+    }
     EscribirTexto $configApp @"
 {
     "//": [
@@ -1539,7 +1567,7 @@ else {
         "Ver Documentacion/01-Guia-de-Instalacion.md, 5."
     ],
     "ApiBaseUrl": "https://localhost:$Puerto",
-    "ConnectionString": "Host=localhost;Port=5432;Database=$Bd;Username=judo_api;Password=$ClaveApi",
+    "ConnectionString": "Host=localhost;Port=5432;Database=$Bd;Username=judo_api;Password=$claveApiApp",
     "RutaApi": "$($Dir -replace '\\','\\')"
 }
 "@
@@ -1573,14 +1601,19 @@ else {
            Puerto = $Puerto; Accion = 'Allow'; Remoto = $subred },
         @{ Nombre = 'JudoAdministracion-PostgreSQL-Bloqueado'
            Titulo = 'JudoAdministracion PostgreSQL (5432/tcp bloqueado desde la red)'
-           Puerto = 5432;    Accion = 'Block'; Remoto = 'Any' }))
+           Puerto = 5432;    Accion = 'Block'; Remoto = 'Any' },
+        # El servicio de entrenadores, que arranca la API y escucha en la segunda tarjeta, la del
+        # router de los entrenadores (ver Servidor:UrlEntrenadores y la documentacion 04).
+        @{ Nombre = 'JudoAdministracion-Entrenadores'
+           Titulo = 'JudoAdministracion entrenadores (80/tcp desde 192.168.0.0/24)'
+           Puerto = 80;      Accion = 'Allow'; Remoto = '192.168.0.0/24' }))
     {
         Remove-NetFirewallRule -Name $regla.Nombre -ErrorAction SilentlyContinue
         New-NetFirewallRule -Name $regla.Nombre -DisplayName $regla.Titulo `
             -Direction Inbound -Protocol TCP -LocalPort $regla.Puerto `
             -RemoteAddress $regla.Remoto -Action $regla.Accion -Profile Any | Out-Null
     }
-    Bien "cortafuegos: $Puerto/tcp abierto a $subred, 5432/tcp cerrado desde la red"
+    Bien "cortafuegos: $Puerto/tcp abierto a $subred, 80/tcp a 192.168.0.0/24 (entrenadores), 5432/tcp cerrado desde la red"
 }
 
 # Que PostgreSQL no escuche en la red es la mitad importante del asunto, y no depende del

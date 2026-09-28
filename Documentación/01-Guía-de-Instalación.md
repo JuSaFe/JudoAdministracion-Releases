@@ -608,6 +608,16 @@ Este paso no es opcional y conviene entender por qué:
 Vuelve a arrancarse a mano una vez para confirmar que sigue en pie con el rol nuevo, y se comprueba
 otra vez `/api/estado`.
 
+> **La contraseña se escribe en claro y el servicio la cifra.** Al arrancar, si la contraseña de
+> `ConnectionString` está en claro, el servicio la cifra para ESTE equipo y reescribe el archivo:
+> queda como `Password=cifrado:…` (DPAPI de equipo en Windows; AES con una clave derivada del
+> identificador del equipo en macOS y Linux). Así no se puede leer ni usar en una copia del archivo
+> que salga de aquí. Para cambiarla basta con volver a escribirla en claro: se cifra en el siguiente
+> arranque. Los guiones de preparación ya la escriben cifrada, también en el `appsettings.Local.json`
+> de la aplicación de escritorio del servidor, que ella no puede reescribir. Un archivo cifrado en
+> otro equipo no se puede descifrar aquí: el servicio no arranca y lo dice, y la solución es la misma,
+> escribir la contraseña en claro.
+
 > Cuando una versión futura cambie el esquema, se repite este baile: `judo_owner` +
 > `InicializarBaseDeDatos: true` para el arranque de la actualización, y vuelta a `judo_api` +
 > `false`. Está en §7.
@@ -668,10 +678,24 @@ La inicialización deja un solo usuario:
 |---|---|---|
 | `admin@judo.com` | `admin123` | `admin` |
 
-**Cambiar esa contraseña antes de que el servidor esté en la red del pabellón.** Todavía no hay
-pantalla de gestión de usuarios en la aplicación, así que las altas y los cambios se hacen por SQL.
-La contraseña se guarda como hash bcrypt y `pgcrypto` genera hashes que la aplicación acepta
-(comprobado: `crypt(…, gen_salt('bf', 11))` produce hashes `$2a$` que valida `BCrypt.Verify`):
+**La aplicación obliga a cambiar esa contraseña en el primer inicio de sesión**: quien entra con
+`admin123` —ese usuario o cualquier otro al que se le haya puesto— ve un aviso y no pasa del login
+sin poner una nueva. No es solo la pantalla: el servidor rechaza cualquier otra operación con esa
+sesión (responde `428`), así que tampoco se puede usar desde otro programa.
+
+Las altas, los cambios y los desbloqueos se hacen desde el icono de la persona de la pantalla de
+login, en el equipo servidor (**Usuarios**). Ahí mismo están las reglas de bloqueo:
+
+- **Un usuario** que falla la contraseña **5 veces seguidas** queda bloqueado **un día**, o hasta que
+  se le desbloquee desde Usuarios (también se desbloquea al ponerle una contraseña nueva).
+- **Un equipo** desde el que se falla **10 veces seguidas**, con el usuario que sea, queda bloqueado
+  hasta que se quite a mano en **Usuarios → Equipos bloqueados**. Ahí también se puede bloquear una
+  MAC a mano. El servidor reconoce el equipo por la MAC de su tarjeta de red, que saca de su propia
+  tabla ARP, así que solo ve los equipos de su misma red; el propio servidor no se bloquea nunca.
+
+Los fallos se olvidan pasado un día sin fallar. Si hiciera falta hacerlo por SQL, la contraseña se
+guarda como hash bcrypt y `pgcrypto` genera hashes que la aplicación acepta (comprobado:
+`crypt(…, gen_salt('bf', 11))` produce hashes `$2a$` que valida `BCrypt.Verify`):
 
 ```sql
 -- Cambiar la contraseña del administrador

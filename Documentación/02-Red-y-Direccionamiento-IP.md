@@ -28,6 +28,12 @@ Red: **192.168.2.0/24** · Máscara: **255.255.255.0** · Puerta de enlace: **19
 | `192.168.2.100` – `192.168.2.199` | 100 | **Pool DHCP** | Dispositivos no planificados (ver §1.2) |
 | `192.168.2.200` – `192.168.2.254` | 55 | *Libre* | Pruebas y diagnóstico |
 
+**Y una segunda red, la de los entrenadores**: `192.168.0.0/24`, en su propio router y sin internet.
+El servidor está en las dos: en esta con la `192.168.2.3` y en la de entrenadores con la
+`192.168.0.3`, por un adaptador USB-RJ45 **sin puerta de enlace**. Desde esa red solo se llega a la
+web de entrenadores, nunca a la API de competición. Está entera en la
+[04-Acceso-Entrenadores.md](04-Acceso-Entrenadores.md).
+
 ### 1.1 Por qué se deja libre la `.2`
 
 Muchos routers domésticos y de operador se asignan a sí mismos una segunda dirección, o la usan
@@ -228,6 +234,7 @@ reconexión solo produce un parpadeo en la pantalla.
 |---|---|---|---|
 | **8443** | TCP / HTTPS + WebSocket | API de JudoAdministración | `.5`–`.9`, `.10`–`.19`, `.20`–`.29` |
 | **5432** | TCP | PostgreSQL | **Solo el propio servidor** (`127.0.0.1`) |
+| **80** en `192.168.0.3` | TCP / HTTP | Web de entrenadores (ver la 04) | Solo la red de entrenadores, `192.168.0.0/24` |
 | 3389 / 22 | TCP | Escritorio remoto / SSH | Solo `.5` (opcional, para mantenimiento) |
 
 **PostgreSQL no se expone a la red.** Ésta es una de las principales ventajas de centralizar todo
