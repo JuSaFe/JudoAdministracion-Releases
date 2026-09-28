@@ -64,8 +64,8 @@ Rangos del plan de direcciones (doc 02):
 
   servidor    192.168.2.3
   puesto      192.168.2.5  - 192.168.2.9     puestos de administración
-  marcador    192.168.2.10 - 192.168.2.19    marcadores de tatami
-  pantalla    192.168.2.20 - 192.168.2.29    pantallas de visualización
+  marcador    192.168.2.11 - 192.168.2.20    marcadores de tatami
+  pantalla    192.168.2.21 - 192.168.2.30    pantallas de visualización
 AYUDA
 }
 

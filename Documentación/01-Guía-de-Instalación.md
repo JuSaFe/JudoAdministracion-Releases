@@ -711,7 +711,7 @@ Los tres roles que entiende el servidor, y a quién corresponde cada uno:
 |---|---|---|
 | `admin` | Responsable de la competición | Todo, incluida la configuración del evento y los datos maestros |
 | `operador` | Compañeros en los puestos `.5`–`.9` | Participantes, pesaje, sorteo, orden de combates y resultados |
-| `marcador` | Marcadores de tatami `.10`–`.19` | Solo anotar el resultado de los combates |
+| `marcador` | Marcadores de tatami `.11`–`.20` | Solo anotar el resultado de los combates |
 
 Un usuario por persona, no uno compartido: las tablas guardan quién insertó y quién modificó cada
 fila (`usuario_insert` / `usuario_update`), y con una cuenta común esa traza no vale para nada.

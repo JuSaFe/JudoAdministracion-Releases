@@ -22,9 +22,9 @@ Red: **192.168.2.0/24** · Máscara: **255.255.255.0** · Puerta de enlace: **19
 | `192.168.2.3` | 1 | **Servidor** | PostgreSQL + API de JudoAdministración |
 | `192.168.2.4` | 1 | *Servidor de respaldo* | Reservada (ver §7) |
 | `192.168.2.5` – `192.168.2.9` | 5 | **Puestos de administración** | La aplicación de escritorio |
-| `192.168.2.10` – `192.168.2.19` | 10 | **Marcadores de tatami** | Leen combates, anotan puntos, envían resultado |
-| `192.168.2.20` – `192.168.2.29` | 10 | **Pantallas de visualización** | Muestran tatamis y sus 4 próximos combates |
-| `192.168.2.30` – `192.168.2.99` | 70 | *Libre* | Ampliación futura |
+| `192.168.2.11` – `192.168.2.20` | 10 | **Marcadores de tatami** | Leen combates, anotan puntos, envían resultado |
+| `192.168.2.21` – `192.168.2.30` | 10 | **Pantallas de visualización** | Muestran tatamis y sus 4 próximos combates |
+| `192.168.2.31` – `192.168.2.99` | 69 | *Libre* | Ampliación futura |
 | `192.168.2.100` – `192.168.2.199` | 100 | **Pool DHCP** | Dispositivos no planificados (ver §1.2) |
 | `192.168.2.200` – `192.168.2.254` | 55 | *Libre* | Pruebas y diagnóstico |
 
@@ -70,15 +70,17 @@ Rellena y guarda esta tabla en cada evento; es lo primero que se consulta cuando
 | 192.168.2.7 | Puesto administración 3 | | | |
 | 192.168.2.8 | Puesto administración 4 | | | |
 | 192.168.2.9 | Puesto administración 5 | | | |
-| 192.168.2.10 | Marcador tatami 1 | | Tatami 1 | |
-| 192.168.2.11 | Marcador tatami 2 | | Tatami 2 | |
+| 192.168.2.11 | Marcador tatami 1 | | Tatami 1 | |
+| 192.168.2.12 | Marcador tatami 2 | | Tatami 2 | |
 | … | | | | |
-| 192.168.2.20 | Pantalla 1 | | | |
+| 192.168.2.21 | Pantalla 1 | | | |
 | … | | | | |
 
-> **Convención:** el último dígito del marcador coincide con el número de tatami menos nueve —
-> tatami 1 → `.10`, tatami 2 → `.11`, tatami 5 → `.14`. Cuando un marcador falla, saber su IP de
-> memoria ahorra minutos.
+> **Convención:** el último dígito coincide con el número del equipo: el marcador del tatami N es
+> la `.(10 + N)` —tatami 1 → `.11`, tatami 2 → `.12`, tatami 5 → `.15`— y la pantalla N, la
+> `.(20 + N)` —pantalla 1 → `.21`—. Se empieza en la `.11` y la `.21`, y no en la `.10` y la `.20`,
+> para que el primero acabe en 1 y no en 0. Cuando un marcador falla, saber su IP de memoria ahorra
+> minutos.
 
 ---
 
@@ -209,7 +211,7 @@ reconfigurar la aplicación. La configuración de la app queda:
 > }
 > ```
 
-### 2.3 Marcadores — 192.168.2.10 a 192.168.2.19
+### 2.3 Marcadores — 192.168.2.11 a 192.168.2.20
 
 Aplicación pendiente de desarrollo. Requisitos de red:
 
@@ -218,7 +220,7 @@ Aplicación pendiente de desarrollo. Requisitos de red:
 - Se recomienda **cable** siempre que la instalación del pabellón lo permita: un marcador que
   pierde el resultado de un combate por un corte de Wi-Fi es un incidente arbitral.
 
-### 2.4 Pantallas de visualización — 192.168.2.20 a 192.168.2.29
+### 2.4 Pantallas de visualización — 192.168.2.21 a 192.168.2.30
 
 Misma configuración de red que los marcadores. Son de **solo lectura**: reciben la información de
 combates por WebSocket desde el servidor y nunca escriben. Aquí el Wi-Fi es aceptable, porque una
@@ -232,7 +234,7 @@ reconexión solo produce un parpadeo en la pantalla.
 
 | Puerto | Protocolo | Servicio | Quién puede acceder |
 |---|---|---|---|
-| **8443** | TCP / HTTPS + WebSocket | API de JudoAdministración | `.5`–`.9`, `.10`–`.19`, `.20`–`.29` |
+| **8443** | TCP / HTTPS + WebSocket | API de JudoAdministración | `.5`–`.9`, `.11`–`.20`, `.21`–`.30` |
 | **5432** | TCP | PostgreSQL | **Solo el propio servidor** (`127.0.0.1`) |
 | **80** en `192.168.0.3` | TCP / HTTP | Web de entrenadores (ver la 04) | Solo la red de entrenadores, `192.168.0.0/24` |
 | 3389 / 22 | TCP | Escritorio remoto / SSH | Solo `.5` (opcional, para mantenimiento) |
@@ -251,10 +253,10 @@ switch.
   .5 – .9                 │   API  :8443 ──▶ PostgreSQL  │
                           │                     :5432    │
   Marcadores     ──8443──▶│                  (solo local)│
-  .10 – .19               │                              │
+  .11 – .20               │                              │
                           │                              │
   Pantallas      ──8443──▶│                              │
-  .20 – .29        (WS)   └──────────────────────────────┘
+  .21 – .30        (WS)   └──────────────────────────────┘
 ```
 
 Ningún dispositivo necesita hablar con otro dispositivo: **todo el tráfico es radial hacia el
@@ -446,7 +448,7 @@ psql -h 192.168.2.3 -U judo_app -d JudoAdministracion -c "SELECT 1;"
   Configura el servidor como fuente NTP de la red, o al menos verifica que todos los equipos
   sincronizan con el mismo servidor de hora.
 - **Etiqueta físicamente cada dispositivo** con su IP. Una pegatina en el marcador del tatami 3 que
-  ponga `192.168.2.12` resuelve una incidencia en segundos.
+  ponga `192.168.2.13` resuelve una incidencia en segundos.
 
 ---
 

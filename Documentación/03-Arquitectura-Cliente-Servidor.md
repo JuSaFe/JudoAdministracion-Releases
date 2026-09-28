@@ -203,7 +203,7 @@ la toca al reejecutarse sobre un servidor ya montado.
 |---|---|---|---|
 | `admin` | Responsable de la competición | `Administracion` | Todo: configuración del evento y datos maestros |
 | `operador` | Puestos `.5`–`.9` | `Operacion` | Participantes, pesaje, sorteo, orden de combates y resultados |
-| `marcador` | Marcadores de tatami `.10`–`.19` | `Resultados` | Solo anotar el resultado de un combate |
+| `marcador` | Marcadores de tatami `.11`–`.20` | `Resultados` | Solo anotar el resultado de un combate |
 
 Un usuario por persona y no uno compartido: las tablas guardan `usuario_insert` y `usuario_update`, y
 con una cuenta común esa traza no vale para nada.
