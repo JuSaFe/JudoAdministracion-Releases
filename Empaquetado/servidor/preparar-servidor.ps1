@@ -48,7 +48,14 @@
     -Deshacer BORRA LA BASE DE DATOS. Quita de este equipo, por este orden: la tarea programada, la
     base de datos y sus roles, PostgreSQL, el certificado de los almacenes del equipo, la línea del
     hosts, las reglas del cortafuegos y la carpeta del servicio con sus copias. Antes de borrar la
-    base de datos saca un volcado al perfil del usuario, que es lo único que queda al terminar.
+    base de datos saca un volcado al perfil del usuario, que es lo único que queda al terminar:
+    cifrado para este equipo si hay licencia (-Licencia, o la que tenga instalada la aplicación), y
+    en claro si no.
+
+    La contraseña del superusuario de PostgreSQL (la de la licencia en un servidor ya cerrado) se
+    pregunta si hace falta. Desde otro programa, mejor en la variable de entorno
+    JUDO_CLAVE_SUPERUSUARIO que con -ClavePostgres: en la línea de órdenes se ve en la lista de
+    procesos.
 
     Pruébalo SIEMPRE primero con -Simular, que enseña lo que haría sin tocar nada. Con
     -SinBaseDatos se conservan la base de datos, los roles y PostgreSQL.
@@ -75,10 +82,17 @@ param(
     [string]   $Ip              = "192.168.2.3",
     [int]      $Puerto          = 8443,
     [string]   $Superusuario    = "postgres",
-    [string]   $ClavePostgres,                       # contraseña del superusuario; se pide si falta
+    # La contraseña del superusuario de PostgreSQL. Mejor en la variable de entorno
+    # JUDO_CLAVE_SUPERUSUARIO: un parámetro se ve en la lista de procesos (el Administrador de tareas
+    # enseña la línea de órdenes entera) y se queda en el historial. Se acepta por compatibilidad. Si
+    # no viene por ninguna de las dos vías y hace falta, se pregunta sin eco.
+    [string]   $ClavePostgres,
     [string]   $InstaladorPostgresql,                # .exe de EDB ya descargado, si hay que traerlo
-    [string]   $ClaveOwner,
-    [string]   $ClaveApi,
+    # La licencia de este equipo, OBLIGATORIA: trae las contraseñas de PostgreSQL del servidor. El
+    # guion no las ve; se las pide ya preparadas al binario del servicio (ver preparar-servidor.sh).
+    # Con -Deshacer es opcional: sirve para cifrar el volcado, y si no se da se usa la que tenga
+    # instalada la aplicación de escritorio.
+    [string]   $Licencia,
     [string]   $ClavePfx,
 
     # Todo lo de abajo es para NO hacer algo. Por defecto se hace todo.
@@ -107,6 +121,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# La contraseña del superusuario por la variable de entorno, que es la forma buena de pasarla (ver el
+# parámetro -ClavePostgres). Y se quita del entorno en cuanto se ha leído: la heredaría todo lo que
+# arranca este guion, incluido el servicio que el paso 7 lanza para inicializar el esquema.
+if (-not $ClavePostgres -and $env:JUDO_CLAVE_SUPERUSUARIO) { $ClavePostgres = $env:JUDO_CLAVE_SUPERUSUARIO }
+Remove-Item Env:JUDO_CLAVE_SUPERUSUARIO -ErrorAction SilentlyContinue
 
 # La consola de Windows abre en la pagina de codigos del sistema (850 o 437 en un equipo espanol) y
 # psql devuelve los datos del servidor en UTF-8. Sin igualar las dos, cualquier acento que venga de
@@ -173,6 +193,124 @@ function Proteger ([string]$Texto) {
     return $Texto
 }
 
+# Lo que se le pide al binario del servicio: su salida estandar SOLA, sus errores aparte, y su codigo.
+#
+# Antes iban mezclados (2>&1) en el mismo valor, y cualquier cosa que el binario escribiera en la
+# salida de error -un aviso de .NET, una linea del registro- acababa DENTRO del SQL del cierre que
+# luego se le pasaba a psql. Y con & y 2> no hay forma limpia de separarlos en Windows PowerShell
+# 5.1: cada linea de error llega convertida en un registro de error de PowerShell, con su "En linea:1
+# caracter:..." pegado. Por eso va con Process, que da las dos salidas por separado.
+#
+# CreateNoWindow en falso a proposito: asi el binario comparte ESTA consola, que arriba se ha puesto
+# en UTF-8, y escribe en UTF-8 lo que aqui se lee como UTF-8. Con una consola propia escribiria en la
+# pagina de codigos del sistema y las tildes del SQL llegarian rotas.
+#
+# Quien llama mira Codigo y decide; aqui no se juzga nada, porque para --cifrar-copia una salida
+# vacia es lo correcto y para --sql-cierre es un fallo.
+function DelBinario ([string[]]$Argumentos) {
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName  = $binario
+    # Cada argumento entre comillas: la ruta de la licencia puede llevar espacios.
+    $info.Arguments = (($Argumentos | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' ')
+    $info.UseShellExecute        = $false
+    $info.CreateNoWindow         = $false
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError  = $true
+    $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $info.StandardErrorEncoding  = New-Object Text.UTF8Encoding($false)
+
+    try {
+        $proceso = [Diagnostics.Process]::Start($info)
+        # Las dos a la vez: leyendo una detras de otra, un binario que llene el bufer de la salida de
+        # error mientras aqui se espera a la estandar se quedaria bloqueado para siempre.
+        $errores = $proceso.StandardError.ReadToEndAsync()
+        $salida  = $proceso.StandardOutput.ReadToEnd()
+        $proceso.WaitForExit()
+        return @{ Codigo = $proceso.ExitCode; Salida = $salida.TrimEnd(); Error = $errores.Result.Trim() }
+    }
+    catch {
+        return @{ Codigo = -1; Salida = ''; Error = $_.Exception.Message }
+    }
+}
+
+# La contrasena provisional del superusuario, cuando es este guion el que instala PostgreSQL.
+#
+# El instalador de EDB necesita una contrasena para el superusuario y este guion se la inventa
+# (GenerarClave): el cierre del final la cambia por la de la licencia, asi que nadie tiene por que
+# conocerla. Pero si algo falla ENTRE la instalacion y el cierre -una descarga a medias, el esquema
+# que no arranca, un corte de luz-, la que queda puesta es esa, y si no se ha guardado en ninguna
+# parte el PostgreSQL recien instalado queda sin que nadie pueda entrar en el: ni este guion al
+# relanzarlo, ni la aplicacion, ni el tecnico. La unica salida era desinstalarlo a mano.
+#
+# Asi que se guarda en cuanto se genera, en ProgramData y legible SOLO por Administradores y SYSTEM
+# (sin herencia: ProgramData deja leer a los usuarios normales). Un relanzamiento sin -ClavePostgres
+# la usa sola, y se borra en cuanto el cierre sale bien (y con -Deshacer), que es cuando deja de
+# valer. La aplicacion (InstaladorServidor) tampoco la pide si este archivo existe.
+$archivoProvisional = Join-Path $env:ProgramData 'JudoAdministracion\postgres-provisional.txt'
+
+function GuardarClaveProvisional ([string]$Clave) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $archivoProvisional) | Out-Null
+        # Primero el archivo vacio y sus permisos, y despues el contenido: asi la contrasena no esta
+        # ni un instante en un archivo con los permisos heredados de ProgramData.
+        [IO.File]::WriteAllText($archivoProvisional, '')
+        $acl = New-Object Security.AccessControl.FileSecurity
+        $acl.SetAccessRuleProtection($true, $false)
+        # Por SID y no por nombre: "Administradores" se llama "Administrators" en un Windows en ingles.
+        foreach ($sid in @('S-1-5-32-544', 'S-1-5-18')) {
+            $regla = New-Object Security.AccessControl.FileSystemAccessRule(
+                (New-Object Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'Allow')
+            $acl.AddAccessRule($regla)
+        }
+        Set-Acl -Path $archivoProvisional -AclObject $acl
+        [IO.File]::WriteAllText($archivoProvisional, $Clave, (New-Object Text.UTF8Encoding($false)))
+        Bien "contrasena provisional del superusuario guardada (solo administradores) hasta el cierre:"
+        Bien "  $archivoProvisional"
+    }
+    catch {
+        # Sin ella guardada, un fallo antes del cierre deja un PostgreSQL en el que no entra nadie.
+        # Se sigue -lo normal es que no falle nada-, pero se dice. Y no se deja a medias: un archivo
+        # sin sus permisos propios lo podria leer cualquier usuario del equipo.
+        Remove-Item $archivoProvisional -Force -ErrorAction SilentlyContinue
+        Aviso "no he podido guardar la contrasena provisional del superusuario ($($_.Exception.Message))."
+        Aviso "  Si la instalacion se para antes del cierre, habra que reinstalar PostgreSQL."
+    }
+}
+
+function LeerClaveProvisional {
+    if (-not (Test-Path $archivoProvisional)) { return $null }
+    try { return ([IO.File]::ReadAllText($archivoProvisional)).Trim() } catch { return $null }
+}
+
+function BorrarClaveProvisional {
+    if (-not (Test-Path $archivoProvisional)) { return }
+    Remove-Item $archivoProvisional -Force -ErrorAction SilentlyContinue
+    if (Test-Path $archivoProvisional) {
+        Aviso "no he podido borrar $archivoProvisional; ya no vale para nada, borralo a mano"
+    } else {
+        Bien "borrada la contrasena provisional del superusuario (ya no vale: la cambio el cierre)"
+    }
+}
+
+# El archivo de credenciales que dejaban las instalaciones de antes de la 1.0.0.57 en el perfil de
+# quien las lanzo: la contrasena del .pfx y las de PostgreSQL de entonces, en claro. Ya no se escribe,
+# pero ninguna version lo quitaba. Se borra en cuanto el servidor esta cerrado y con -Deshacer.
+$credencialesAntiguas = Join-Path $env:USERPROFILE 'judo-credenciales-servidor.txt'
+
+function BorrarCredencialesAntiguas {
+    if (-not (Test-Path $credencialesAntiguas)) { return }
+    if ($Simular) {
+        Write-Host "   [simulado] borraria $credencialesAntiguas (contrasenas en claro de una instalacion antigua)" -ForegroundColor Yellow
+        return
+    }
+    Remove-Item $credencialesAntiguas -Force -ErrorAction SilentlyContinue
+    if (Test-Path $credencialesAntiguas) {
+        Aviso "no he podido borrar $credencialesAntiguas`: lleva contrasenas en claro, borralo a mano"
+    } else {
+        Bien "borrado $credencialesAntiguas (contrasenas en claro de una instalacion antigua)"
+    }
+}
+
 # Se instala en Program Files y se registra una tarea del sistema: hace falta elevación.
 $identidad = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identidad)
@@ -207,7 +345,6 @@ $configApp    = Join-Path $DirAplicacion "appsettings.Local.json"
 $hosts        = "$env:SystemRoot\System32\drivers\etc\hosts"
 $marcaHosts   = "# JudoAdministracion"
 $subred       = ($Ip -replace '\.\d+$', '.0') + "/24"
-$credenciales = Join-Path $env:USERPROFILE "judo-credenciales-servidor.txt"
 $paraPuestos  = Join-Path $env:USERPROFILE "judo-puestos"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -332,6 +469,43 @@ if ($Deshacer) {
 
     function EjecutarSqlD ($sql) { return (EjecutarSqlEnD "postgres" $sql) }
 
+    # Un volcado en claro lleva el esquema entero -tablas, funciones, disparadores- y los datos de
+    # todos los deportistas, y se queda en el perfil. Si hay licencia, se cifra para este equipo con
+    # el mismo formato que las copias del actualizador (--cifrar-copia, que deja <volcado>.judocopia
+    # y borra el original; ver CopiaCifrada). La licencia es la de -Licencia o, si no, la que tiene
+    # instalada la aplicacion de escritorio (ServicioLicencia.Ruta: %APPDATA%\JudoAdministracion).
+    #
+    # Si no se puede, se deja en claro y se dice bien alto. Son los datos del propio cliente, y entre
+    # un volcado en claro y ninguno, mejor en claro: la base se borra justo despues.
+    function CifrarVolcadoD ($volcado) {
+        $licenciaD = if ($Licencia) { $Licencia } else { Join-Path $env:APPDATA 'JudoAdministracion\licencia.json' }
+        $cifrado   = [IO.Path]::ChangeExtension($volcado, '.judocopia')
+
+        if (-not (Test-Path $licenciaD)) {
+            Aviso "NO hay licencia con la que cifrarlo: el volcado queda EN CLARO"
+            Aviso "  lleva el esquema y los datos de todos los deportistas; guardalo en sitio seguro"
+            Aviso "  (para que salga cifrado, pasa a -Deshacer la licencia: -Licencia <archivo>)"
+            return
+        }
+        if (-not (Test-Path $binario)) {
+            Aviso "NO esta el binario del servicio para cifrarlo: el volcado queda EN CLARO"
+            return
+        }
+
+        $r = DelBinario @('--licencia', $licenciaD, '--cifrar-copia', $volcado)
+        if ($r.Codigo -eq 0 -and (Test-Path $cifrado)) {
+            # Por si el binario no hubiera llegado a borrar el original: dejarlo al lado del cifrado
+            # seria no haber cifrado nada.
+            Remove-Item $volcado -Force -ErrorAction SilentlyContinue
+            Bien "volcado cifrado para este equipo: $cifrado"
+            $script:VolcadoFinal = $cifrado
+        } else {
+            Aviso "NO he podido cifrar el volcado: queda EN CLARO"
+            if ($r.Error) { Aviso "  $($r.Error)" }
+            Aviso "  lleva el esquema y los datos de todos los deportistas; guardalo en sitio seguro"
+        }
+    }
+
     # Quitar un rol de PostgreSQL no es solo DROP ROLE: mientras queden objetos suyos, o permisos
     # concedidos a el, en CUALQUIER base del cluster, PostgreSQL se niega. Y hace bien.
     #
@@ -453,8 +627,12 @@ if ($Deshacer) {
     else {
         # La contrasena del superusuario hace falta para todo esto y en Windows no hay camino sin
         # ella. Se pide aqui y no al principio para no molestar cuando -SinBaseDatos.
+        #
+        # En un servidor cerrado con la licencia es la que viaja en ella: la tiene quien la emite. En
+        # uno que este guion instalo y que no llego al cierre, la provisional que dejo guardada.
+        if (-not $ClavePostgres) { $ClavePostgres = LeerClaveProvisional }
         if (-not $ClavePostgres) {
-            $segura = Read-Host "   Contrasena del superusuario '$Superusuario' de PostgreSQL" -AsSecureString
+            $segura = Read-Host "   Contrasena del superusuario '$Superusuario' de PostgreSQL (si esta cerrado con la licencia, la de la licencia)" -AsSecureString
             $ClavePostgres = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
                 [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura))
         }
@@ -479,6 +657,7 @@ if ($Deshacer) {
                 if (EjecutarNativoD { & $pgDumpD -U $Superusuario -Fc -f $volcado $Bd }) {
                     Bien "volcado en $volcado"
                     $script:VolcadoFinal = $volcado
+                    CifrarVolcadoD $volcado
                 } else {
                     Aviso "el volcado ha fallado. La base se va a borrar de todos modos (-Deshacer)"
                 }
@@ -519,16 +698,55 @@ if ($Deshacer) {
         # Cuantas bases quedan que NO sean de PostgreSQL ni de esta aplicacion. Es lo que decide si se
         # puede desinstalar el gestor: en un equipo que ya lo tenia puesto -un portatil de trabajo,
         # por ejemplo-, desinstalarlo se llevaria datos que no son de aqui.
+        #
+        # Se pregunta ANTES de devolver el cierre (justo debajo): despues, el superusuario ya no
+        # entraria con la contrasena con la que ha entrado este guion.
         $otras = PsqlD ("SELECT count(*) FROM pg_database WHERE NOT datistemplate " +
                         "AND datname NOT IN ('postgres', '$Bd');")
+        $lista = PsqlD ("SELECT datname FROM pg_database WHERE NOT datistemplate " +
+                        "AND datname NOT IN ('postgres', '$Bd');")
+
+        # El pg_hba.conf y las contrasenas de los superusuarios de antes del cierre, si se guardaron,
+        # y sin el rol "postgres" si lo creo el cierre: si PostgreSQL se queda (porque tiene otras
+        # bases), que se quede como estaba. Sin esto el superusuario seguiria entrando SOLO con la
+        # contrasena de la licencia -la conserva aunque se borren judo_owner y judo_api-, que en ese
+        # equipo no conoce nadie. El SQL lo da el binario (--sql-restaurar, ver
+        # CierrePostgres.SqlRestaurar), que es quien sabe donde dejo el cierre lo que habia.
+        #
+        # Es lo ULTIMO que se hace como superusuario: en cuanto se aplica, el superusuario vuelve a
+        # su contrasena de antes, y PGPASSWORD -la de la licencia- ya no le vale. En una sola
+        # transaccion (-1), como el cierre: o vuelve todo o no vuelve nada. Por archivo y no con -c,
+        # por las comillas (ver el paso 3 de la instalacion).
+        if ($Simular) {
+            Write-Host "   [simulado] devolveria el pg_hba.conf y las contrasenas de antes del cierre" -ForegroundColor Yellow
+        }
+        elseif (-not (Test-Path $binario)) {
+            Aviso "no esta el binario del servicio: no puedo devolver el pg_hba.conf ni las contrasenas"
+            Aviso "  de antes del cierre (estan al lado de pg_hba.conf, .judo-original y .judo-roles)"
+        }
+        else {
+            $r = DelBinario @('--sql-restaurar')
+            $hecho = $false
+            if ($r.Codigo -eq 0 -and $r.Salida) {
+                $temporalRestaurar = Join-Path $env:TEMP ("judo-restaurar-" + [guid]::NewGuid().ToString('N') + ".sql")
+                [IO.File]::WriteAllText($temporalRestaurar, $r.Salida, (New-Object Text.UTF8Encoding($false)))
+                try {
+                    $hecho = EjecutarNativoD { & $psqlD -X -q -1 -U $Superusuario -d postgres -v ON_ERROR_STOP=1 -f $temporalRestaurar }
+                }
+                finally { Remove-Item $temporalRestaurar -Force -ErrorAction SilentlyContinue }
+            }
+            if ($hecho) { Bien "pg_hba.conf y contrasenas de los superusuarios de antes del cierre devueltos" }
+            else {
+                Aviso "no he podido devolver lo de antes del cierre (esta al lado de pg_hba.conf,"
+                Aviso "  .judo-original y .judo-roles); el superusuario sigue con la contrasena de la licencia"
+            }
+        }
 
         if ($otras -notmatch '^\d+$') {
             Aviso "no he podido comprobar si hay otras bases de datos: NO desinstalo PostgreSQL"
         }
         elseif ([int]$otras -gt 0) {
             Aviso "en este cluster quedan $otras bases de datos que no son de esta aplicacion:"
-            $lista = PsqlD ("SELECT datname FROM pg_database WHERE NOT datistemplate " +
-                            "AND datname NOT IN ('postgres', '$Bd');")
             foreach ($n in ($lista -split "`n")) { if ($n.Trim()) { Write-Host "     - $($n.Trim())" } }
             Aviso "PostgreSQL se queda instalado. Desinstalarlo se llevaria esos datos por delante."
         }
@@ -570,6 +788,9 @@ if ($Deshacer) {
 
         $env:PGPASSWORD = $null
     }
+
+    # La provisional ya no tiene a que servir: o el cierre la cambio, o PostgreSQL se acaba de ir.
+    if (-not $Simular) { BorrarClaveProvisional }
 
     # ── 4. Certificado del almacen de confianza ───────────────────────────────────────────────────
 
@@ -708,6 +929,8 @@ if ($Deshacer) {
         Aviso "  Reinicia el equipo cuando puedas y borra la carpeta a mano; nada mas depende de ella."
     }
 
+    BorrarCredencialesAntiguas
+
     # ── Resumen ───────────────────────────────────────────────────────────────────────────────────
 
     Write-Host ""
@@ -792,17 +1015,42 @@ if ($conservarConfig -and $cadenaExistente -match 'Username=judo_owner') {
 }
 
 if ($conservarConfig) {
-    Igual "hay configuracion previa: se conservara, contrasenas incluidas"
-
-    # De esa configuración se puede recuperar lo que hace falta para los pasos que vienen después
-    # —configurar la aplicación de escritorio, sobre todo—, así que una segunda ejecución sirve para
-    # completar un servidor a medias en vez de quedarse a la mitad.
-    if ($cadenaExistente -and $cadenaExistente -match 'Username=judo_api;Password=(.+)$') {
-        $ClaveApi = $Matches[1]
-        Bien "contrasena de judo_api recuperada de la configuracion existente"
-    }
+    Igual "hay configuracion previa: se conservara (la contrasena de la base, de la licencia)"
 }
 else { Bien "servidor nuevo: se generara la configuracion" }
+
+# La licencia de este equipo, con las contraseñas de PostgreSQL del servidor. El guion no las ve: al
+# binario se le piden el SQL del cierre (verificadores SCRAM, no contraseñas) y las de judo_owner y
+# judo_api ya cifradas para este equipo. Ver preparar-servidor.sh, que explica el porqué. DelBinario
+# esta definida arriba, antes de -Deshacer, que tambien la usa.
+if (-not $Licencia) {
+    $huella = (DelBinario @('--huella')).Salida
+    if (-not $huella) { $huella = "(no he podido calcularlo)" }
+    Fallo ("Falta la licencia de este equipo (-Licencia <archivo>).`n" +
+           "        Pidela con el codigo de este equipo: $huella")
+}
+if (-not (Test-Path $Licencia)) { Fallo "No encuentro la licencia en $Licencia." }
+
+# Cada llamada se comprueba por su codigo Y por su salida: un SQL vacio "se aplica" sin error y no
+# hace nada, y eso no se puede descubrir despues.
+function DelBinarioObligatorio ([string[]]$Argumentos, [string]$QueFalla) {
+    $r = DelBinario $Argumentos
+    if ($r.Codigo -ne 0 -or -not $r.Salida) {
+        $porque = if ($r.Error) { $r.Error } else { "el binario ha terminado con codigo $($r.Codigo) y sin respuesta" }
+        Fallo "${QueFalla}: $porque"
+    }
+    return $r.Salida
+}
+
+$sqlCierre        = DelBinarioObligatorio @('--licencia', $Licencia, '--sql-cierre') "La licencia no sirve para este servidor"
+$sqlRolesLicencia = DelBinarioObligatorio @('--licencia', $Licencia, '--sql-contrasenas') "No he podido sacar de la licencia las contrasenas de los roles"
+$ClaveOwner = DelBinarioObligatorio @('--licencia', $Licencia, '--clave-cifrada', 'judo_owner') "No he podido cifrar para este equipo la contrasena de judo_owner"
+$ClaveApi   = DelBinarioObligatorio @('--licencia', $Licencia, '--clave-cifrada', 'judo_api') "No he podido cifrar para este equipo la contrasena de judo_api"
+if ($ClaveOwner -notlike 'cifrado:*' -or $ClaveApi -notlike 'cifrado:*') {
+    Fallo "No he podido preparar las contrasenas de la licencia para este equipo."
+}
+Bien "licencia de este equipo con las contrasenas del servidor"
+$cerrado = $false
 
 # ── 2. PostgreSQL ─────────────────────────────────────────────────────────────────────────────────
 
@@ -819,6 +1067,42 @@ function BuscarPsql {
 
 $psql = BuscarPsql
 
+# Si el PostgreSQL de este equipo ya esta cerrado con ESTA licencia. Lo dice el binario
+# (--probar-cierre), que entra con las contrasenas de la licencia y mira las reglas de pg_hba.conf sin
+# ensenar nada; ver preparar-servidor.sh, probar_cierre:
+#
+#   0   cerrado con esta licencia: la base de datos no se toca y no hace falta ninguna contrasena.
+#   10  la licencia todavia no esta aplicada (un servidor de antes de la 1.0.0.57, o uno que nunca
+#       llego al cierre): el camino normal, con la contrasena del superusuario y el cierre al final.
+#   11  cerrado con esta licencia pero manipulado: se trata como uno sin cerrar -hace falta la
+#       contrasena del superusuario- y el cierre del final lo deja otra vez como debe.
+#   12  no responde, o no se sabe.
+#
+# Antes esto se DEDUCIA de "hay configuracion, responde y no me deja entrar", que es exactamente lo
+# que se ve en un servidor antiguo sin cerrar con una contrasena del superusuario equivocada: el
+# guion se saltaba la base de datos, los roles, el esquema y el cierre, dejaba una configuracion con
+# una contrasena de judo_api que el rol no tenia y acababa en "Servidor preparado".
+#
+# Va ANTES de resolver la contrasena del superusuario: en un servidor cerrado no hace falta, y no hay
+# por que preguntarla.
+$script:estadoCierre  = 12
+$script:detalleCierre = ""
+function ProbarCierre {
+    $r = DelBinario @('--licencia', $Licencia, '--probar-cierre', '5432', $Bd)
+    $script:detalleCierre = $r.Error
+    $script:estadoCierre  = if (@(0, 10, 11, 12) -contains $r.Codigo) { $r.Codigo } else { 12 }
+}
+
+if ($psql) {
+    ProbarCierre
+    if ($script:estadoCierre -eq 0) { $cerrado = $true }
+    elseif ($script:estadoCierre -eq 11) {
+        Aviso "PostgreSQL esta cerrado con esta licencia, pero lo han tocado:"
+        if ($script:detalleCierre) { Aviso "  $($script:detalleCierre)" }
+        Aviso "se vuelve a preparar y a cerrar; para eso hace falta la contrasena del superusuario"
+    }
+}
+
 # La contrasena del superusuario se resuelve AQUI, antes de instalar nada, y el orden importa:
 #
 #   - Si PostgreSQL ya esta en este equipo, es la que se decidio el dia que se instalo.
@@ -828,18 +1112,38 @@ $psql = BuscarPsql
 #
 # Antes se pedia despues de instalar, y ahi no habia forma de acertar: el instalador la habia
 # preguntado por su cuenta, en su propio asistente.
-if (-not $ClavePostgres) {
-    $etiqueta = if ($psql) { "Contrasena del superusuario '$Superusuario' de PostgreSQL" }
-                else       { "Contrasena que se le pondra al superusuario '$Superusuario' (PostgreSQL se va a instalar)" }
+#
+# Si una ejecucion anterior instalo PostgreSQL y se quedo antes del cierre, la contrasena es la
+# provisional que dejo guardada (ver GuardarClaveProvisional): se usa sola.
+if (-not $cerrado -and -not $ClavePostgres) {
+    $ClavePostgres = LeerClaveProvisional
+    if ($ClavePostgres) { Bien "uso la contrasena provisional del superusuario de una instalacion anterior" }
+}
 
-    $segura = Read-Host "   $etiqueta" -AsSecureString
+# Si PostgreSQL se va a instalar ahora, la contraseña que se le pone al superusuario es provisional:
+# el cierre del final la cambia por la de la licencia. Así que no se pregunta, se genera, y se guarda
+# hasta el cierre por si algo se para antes.
+if (-not $ClavePostgres -and -not $psql) {
+    $ClavePostgres = GenerarClave
+    GuardarClaveProvisional $ClavePostgres
+}
+
+# Si ya estaba, hace falta la suya, salvo en un servidor que el binario ha confirmado cerrado con esta
+# licencia: ahi no se entra sin la de la licencia, y tampoco hace falta.
+if (-not $cerrado -and -not $ClavePostgres -and -not $Si) {
+    $segura = Read-Host "   Contrasena del superusuario '$Superusuario' de PostgreSQL" -AsSecureString
     $ClavePostgres = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura))
 }
 
-if (-not $ClavePostgres) {
+# Y sin ella no se sigue. Antes valia vacia con una configuracion previa, y eso era justo el camino
+# por el que un servidor sin cerrar acababa "preparado" sin base de datos, sin roles y sin cierre.
+# Solo se deja pasar cuando PostgreSQL no respondia (12): ahi no hay nada que decidir todavia, y la
+# comprobacion de mas abajo dira si responde o no.
+if (-not $cerrado -and -not $ClavePostgres -and $script:estadoCierre -ne 12) {
     Fallo ("Hace falta la contrasena del superusuario '$Superusuario' de PostgreSQL.`n" +
-           "        Pasala con -ClavePostgres si lanzas este guion desde otro programa.")
+           "        Pasala en la variable de entorno JUDO_CLAVE_SUPERUSUARIO si lanzas este guion`n" +
+           "        desde otro programa (o con -ClavePostgres, que se ve en la lista de procesos).")
 }
 
 # El instalador de EDB que se descarga cuando winget no puede, con su huella. La version va fijada
@@ -1069,19 +1373,38 @@ function SuperusuarioResponde {
     $anterior = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $psql -U $Superusuario -d postgres -tAc "SELECT 1" 2>&1 | Out-Null
+        & $psql -w -U $Superusuario -d postgres -tAc "SELECT 1" 2>&1 | Out-Null
         return ($LASTEXITCODE -eq 0)
     }
     finally { $ErrorActionPreference = $anterior }
 }
 
 $responde = $false
-foreach ($intento in 1..12) {
+# En un servidor cerrado (confirmado arriba) no hay nada que esperar: ni se entra ni hace falta. Y sin
+# contraseña tampoco: no va a entrar.
+foreach ($intento in $(if ($ClavePostgres -and -not $cerrado) { 1..12 } else { @() })) {
     if (SuperusuarioResponde) { $responde = $true; break }
     Start-Sleep -Seconds 5
 }
 
-if (-not $responde) {
+# No respondia al principio y puede que ahora si: un servidor ya cerrado que estaba arrancando. Se le
+# vuelve a preguntar al binario antes de dar por perdida la entrada del superusuario.
+if (-not $responde -and -not $cerrado -and -not $acabaDeInstalarse -and $script:estadoCierre -eq 12) {
+    ProbarCierre
+    if ($script:estadoCierre -eq 0) { $cerrado = $true }
+}
+
+if (-not $responde -and -not $cerrado) {
+    if ($script:estadoCierre -eq 11) {
+        Fallo ("PostgreSQL esta cerrado con esta licencia pero manipulado, y no entro como superusuario`n" +
+               "        para volver a cerrarlo. Hace falta su contrasena (la de la licencia, que tiene`n" +
+               "        quien la emite), en la variable de entorno JUDO_CLAVE_SUPERUSUARIO.")
+    }
+    if (-not $ClavePostgres) {
+        Fallo ("PostgreSQL no responde, o no deja entrar sin contrasena.`n" +
+               "        Comprueba que el servicio de PostgreSQL esta arrancado (services.msc) y vuelve a`n" +
+               "        lanzar el guion; si pide contrasena, pasala en JUDO_CLAVE_SUPERUSUARIO.")
+    }
     if ($acabaDeInstalarse) {
         Fallo ("PostgreSQL se acaba de instalar pero no acepta la contrasena que se le ha dado.`n" +
                "        Quitalo desde 'Aplicaciones instaladas' e instalalo a mano con su asistente`n" +
@@ -1089,9 +1412,9 @@ if (-not $responde) {
                "        pantalla de la aplicacion.")
     }
 
-    Fallo ("PostgreSQL responde, pero no con esa contrasena de '$Superusuario'.`n" +
+    Fallo ("PostgreSQL no deja entrar con esa contrasena de '$Superusuario' (o no responde).`n" +
            "        Es la que se decidio al instalar PostgreSQL en este equipo, no ninguna de la`n" +
-           "        aplicacion.")
+           "        aplicacion." + $(if ($script:detalleCierre) { "`n        Comprobacion del cierre: $($script:detalleCierre)" } else { "" }))
 }
 
 function PsqlSuper {
@@ -1106,6 +1429,15 @@ function PsqlValor {
     return ($v | Out-String).Trim()
 }
 
+$escuchaPg = "?"
+if ($cerrado) {
+    Igual "PostgreSQL en marcha y ya cerrado con esta licencia (comprobado): la base de datos no se toca"
+    Paso "3/10  Base de datos `"$Bd`""
+    Igual "servidor cerrado con la licencia: ya existe, no se toca"
+    Paso "4/10  Roles y extensiones"
+    Igual "servidor cerrado con la licencia: ya estan, no se tocan"
+}
+else {
 $version = (PsqlValor -Consulta "SHOW server_version;").Split(".")[0]
 Bien "PostgreSQL $version responde"
 
@@ -1167,19 +1499,14 @@ else {
 
 Paso "4/10  Roles y extensiones"
 
-if ($conservarConfig) {
-    # Roles y permisos si, contrasenas no: las que hay son las que conoce la configuracion existente.
-    PsqlSuper -Base $Bd -Argumentos @("-q", "-v", "rotar_claves=off", "-v", "bd=$Bd", "-f", $sqlRoles)
-    Bien "roles comprobados y permisos repuestos (contrasenas sin tocar)"
-}
-else {
-    if (-not $ClaveOwner) { $ClaveOwner = GenerarClave }
-    if (-not $ClaveApi)   { $ClaveApi   = GenerarClave }
-
-    PsqlSuper -Base $Bd -Argumentos @(
-        "-q", "-v", "clave_owner=$ClaveOwner", "-v", "clave_api=$ClaveApi", "-v", "bd=$Bd", "-f", $sqlRoles)
-    Bien "judo_owner y judo_api listos"
-}
+# Roles y permisos, sin contraseñas (rotar_claves=off), y enseguida las de la licencia para judo_owner
+# y judo_api. La del superusuario va con el cierre del final: el guion entra con él por contraseña.
+PsqlSuper -Base $Bd -Argumentos @("-q", "-v", "rotar_claves=off", "-v", "bd=$Bd", "-f", $sqlRoles)
+$temporalRoles = Join-Path $env:TEMP ("judo-roles-" + [guid]::NewGuid().ToString('N') + ".sql")
+[IO.File]::WriteAllText($temporalRoles, $sqlRolesLicencia, (New-Object System.Text.UTF8Encoding($false)))
+try { PsqlSuper -Argumentos @("-q", "-f", $temporalRoles) | Out-Null }
+finally { Remove-Item $temporalRoles -Force -ErrorAction SilentlyContinue }
+Bien "judo_owner y judo_api listos, con las contrasenas de la licencia"
 
 # Objetos que ya estaban ahi y no son de judo_owner.
 #
@@ -1266,6 +1593,10 @@ else {
 $extensiones = PsqlValor -Base $Bd -Consulta "SELECT string_agg(extname, ', ' ORDER BY extname) FROM pg_extension WHERE extname IN ('unaccent','pgcrypto');"
 if ($extensiones -ne "pgcrypto, unaccent") { Fallo "Faltan extensiones ($extensiones). Reinstala PostgreSQL incluyendo los modulos contrib." }
 Bien "extensiones unaccent y pgcrypto instaladas"
+
+# Se mira ahora, que todavia se puede entrar; se comprueba en el paso 9.
+$escuchaPg = PsqlValor -Consulta "SHOW listen_addresses;"
+}
 
 # ── 5. Certificado HTTPS ──────────────────────────────────────────────────────────────────────────
 
@@ -1355,6 +1686,17 @@ function EscribirConfiguracion {
 
 if ($conservarConfig) {
     Igual "appsettings.Local.json ya existe, se conserva (-ForzarConfiguracion para reescribirlo)"
+
+    # Salvo la contraseña de la base, que pasa a ser la de la licencia: un servidor de antes de la
+    # 1.0.0.57 tenía otra, y después del cierre solo vale esta.
+    $textoConfig = Get-Content -Raw $config
+    if ($textoConfig -match '"ConnectionString"[^"]*"[^"]*Username=judo_api;') {
+        $textoConfig = [regex]::Replace($textoConfig,
+            '("ConnectionString"[^"]*"[^"]*Password=)[^"]*', { param($m) $m.Groups[1].Value + $ClaveApi })
+        [IO.File]::WriteAllText($config, $textoConfig, (New-Object System.Text.UTF8Encoding($false)))
+        Bien "contrasena de la base de datos tomada de la licencia"
+    }
+    else { Aviso "la configuracion existente no usa judo_api; relanza con -ForzarConfiguracion" }
     Aviso "la clave de firma de tokens NO se toca: cambiarla cerraria todas las sesiones abiertas"
 }
 else {
@@ -1370,8 +1712,20 @@ else {
         $script:claveTokens = [Convert]::ToBase64String($bytes)
     }
 
-    EscribirConfiguracion -Usuario "judo_owner" -Clave $ClaveOwner -Inicializar $true
-    Bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
+    if ($cerrado) {
+        # En un servidor ya cerrado el paso 7 no se ejecuta -el esquema ya esta, y el superusuario no
+        # se puede usar-, asi que nadie pasaria despues la configuracion de judo_owner a judo_api: el
+        # servicio se quedaria para siempre con el rol que puede alterar el esquema y la inicializacion
+        # puesta. Se escribe directamente la definitiva. La contrasena de judo_api es la de la
+        # licencia, que es la que tiene el rol: el binario acaba de confirmar que el servidor esta
+        # cerrado con ESTA licencia.
+        EscribirConfiguracion -Usuario "judo_api" -Clave $ClaveApi -Inicializar $false
+        Bien "escrita con el rol judo_api, sin inicializacion (servidor ya cerrado: el esquema ya esta)"
+    }
+    else {
+        EscribirConfiguracion -Usuario "judo_owner" -Clave $ClaveOwner -Inicializar $true
+        Bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
+    }
 }
 
 # La carpeta de imagenes que se puede tocar en este equipo: el logo de la federacion, el pie de
@@ -1436,6 +1790,9 @@ function EsperarServicio {
 if ($SinEsquema) {
     Aviso "omitido por -SinEsquema"
 }
+elseif ($cerrado) {
+    Igual "servidor cerrado con la licencia: el esquema ya esta"
+}
 elseif ($conservarConfig) {
     Igual "se conserva la configuracion existente: no se relanza la inicializacion"
     Aviso "si esta es una actualizacion con cambios de esquema, sigue la guia 01, 7"
@@ -1492,8 +1849,9 @@ else {
     Bien "configuracion cambiada al rol judo_api, sin inicializacion"
 
     # Que judo_api pueda leer y NO tocar el esquema es la comprobacion que justifica los dos roles.
-    $env:PGPASSWORD = $ClaveApi
-    & $psql -h localhost -U judo_api -d $Bd -tAc "SELECT count(*) FROM eventos;" | Out-Null
+    # Con SET ROLE desde el superusuario: la contraseña de judo_api viene en la licencia y este guion
+    # no la conoce. Lo que se comprueba son los permisos, y SET ROLE pasa a tener los de judo_api.
+    & $psql -U $Superusuario -d $Bd -v ON_ERROR_STOP=1 -tAc "SET ROLE judo_api; SELECT count(*) FROM eventos;" | Out-Null
     if ($LASTEXITCODE -eq 0) { Bien "judo_api puede leer los datos" }
     else                     { Fallo "judo_api no puede leer. Revisa el paso 4." }
 
@@ -1506,10 +1864,10 @@ else {
     $eapAnterior = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $psql -h localhost -U judo_api -d $Bd -c "CREATE TABLE comprobacion_permisos (x int);" 2>&1 | Out-Null
+        & $psql -U $Superusuario -d $Bd -v ON_ERROR_STOP=1 -c "SET ROLE judo_api; CREATE TABLE comprobacion_permisos (x int);" 2>&1 | Out-Null
         $judoApiPuedeCrear = ($LASTEXITCODE -eq 0)
         if ($judoApiPuedeCrear) {
-            & $psql -h localhost -U judo_api -d $Bd -c "DROP TABLE comprobacion_permisos;" 2>&1 | Out-Null
+            & $psql -U $Superusuario -d $Bd -c "DROP TABLE IF EXISTS comprobacion_permisos;" 2>&1 | Out-Null
         }
     }
     finally {
@@ -1517,7 +1875,27 @@ else {
     }
     if ($judoApiPuedeCrear) { Aviso "judo_api PUEDE crear tablas y no deberia. Revisa los permisos del paso 4." }
     else                    { Bien "judo_api no puede alterar el esquema (correcto)" }
-    $env:PGPASSWORD = $ClavePostgres
+}
+
+# ── El cierre de PostgreSQL ───────────────────────────────────────────────────────────────────────
+#
+# Lo último que toca la base de datos: a partir de aquí ya no se entra sin la contraseña de la
+# licencia, tampoco este guion. Ver preparar-servidor.sh y CierrePostgres.
+#
+# En UNA transaccion (-1): si algo falla a mitad no queda nada a medias -ni las contrasenas cambiadas
+# con pg_hba.conf abierto, ni pg_hba.conf cerrado con contrasenas que no son las de la licencia-. -X
+# para que un psqlrc de quien sea no se meta por medio.
+if (-not $cerrado) {
+    $temporalCierre = Join-Path $env:TEMP ("judo-cierre-" + [guid]::NewGuid().ToString('N') + ".sql")
+    [IO.File]::WriteAllText($temporalCierre, $sqlCierre, (New-Object System.Text.UTF8Encoding($false)))
+    try { PsqlSuper -Argumentos @("-X", "-q", "-1", "-f", $temporalCierre) | Out-Null }
+    finally { Remove-Item $temporalCierre -Force -ErrorAction SilentlyContinue }
+    $cerrado = $true
+    $env:PGPASSWORD = $null
+    Bien "PostgreSQL cerrado con la licencia: solo se entra con contrasena y desde este equipo"
+
+    # La provisional ya no vale: el cierre acaba de poner al superusuario la de la licencia.
+    BorrarClaveProvisional
 }
 
 # ── 8. La aplicación de escritorio de este equipo ─────────────────────────────────────────────────
@@ -1619,8 +1997,8 @@ else {
 # Que PostgreSQL no escuche en la red es la mitad importante del asunto, y no depende del
 # cortafuegos sino de listen_addresses. De fabrica esta bien; se comprueba porque una instalacion
 # heredada puede venir abierta.
-$escuchaPg = PsqlValor -Consulta "SHOW listen_addresses;"
-if ($escuchaPg -eq "localhost" -or $escuchaPg -eq "127.0.0.1") { Bien "PostgreSQL escucha solo en local" }
+if ($escuchaPg -eq "?") { Igual "listen_addresses no se ha podido mirar (servidor cerrado); se comprobo al instalar" }
+elseif ($escuchaPg -eq "localhost" -or $escuchaPg -eq "127.0.0.1") { Bien "PostgreSQL escucha solo en local" }
 else { Aviso "PostgreSQL escucha en `"$escuchaPg`" y deberia hacerlo solo en local (doc 02, 3.4)" }
 
 # ── 10. Arranque automático y comprobación ────────────────────────────────────────────────────────
@@ -1755,33 +2133,11 @@ Certificado: $Nombre.crt   (el .pfx NO sale del servidor)
 "@
 }
 
-if (-not $conservarConfig) {
-    @"
-Credenciales del servidor de JudoAdministracion
-Generadas por preparar-servidor.ps1
-
-Servidor           $Nombre ($Ip), puerto $Puerto
-Base de datos      $Bd
-Carpeta            $Dir
-
-PostgreSQL
-  judo_owner       $ClaveOwner      (dueno del esquema; migraciones y copias de seguridad)
-  judo_api         $ClaveApi      (con el que corre el servicio y la aplicacion de este equipo)
-
-Certificado
-  $Nombre.pfx   $ClavePfx
-
-GUARDA ESTE ARCHIVO FUERA DE ESTE EQUIPO. Sin estas contrasenas, una copia de seguridad
-restaurada no deja el servidor funcionando (Documentacion/01-Guia-de-Instalacion.md, 8).
-"@ | Set-Content -Path $credenciales -Encoding UTF8
-
-    # Solo el administrador debe poder leerlo.
-    $acl = Get-Acl $credenciales
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
-        $identidad.Name, "FullControl", "Allow")))
-    Set-Acl -Path $credenciales -AclObject $acl
-}
+# Ya no se deja ningun archivo con contraseñas: las de PostgreSQL viajan en la licencia y las recupera
+# quien la emite, y la del certificado esta en appsettings.Local.json. Antes quedaba
+# judo-credenciales-servidor.txt con todo en claro, y ese se borra aqui en cuanto el servidor esta
+# cerrado (ver BorrarCredencialesAntiguas).
+if ($cerrado) { BorrarCredencialesAntiguas }
 
 $env:PGPASSWORD = $null
 
@@ -1796,11 +2152,9 @@ else {
     Write-Host "Arriba esta lo que dice al arrancar. Los fallos frecuentes, en la guia 01, 9." -ForegroundColor Red
 }
 Write-Host ""
-if (-not $conservarConfig) {
-    Write-Host "   Contrasenas guardadas en:  $credenciales"
-    Write-Host "   Copialas fuera de este equipo y borralas de aqui cuando lo hayas hecho." -ForegroundColor Yellow
-    Write-Host ""
-}
+Write-Host "   PostgreSQL queda cerrado con la licencia: solo se entra con contrasena y desde este"
+Write-Host "   equipo. Las contrasenas no estan escritas en ningun sitio legible; viajan en la licencia."
+Write-Host ""
 Write-Host "   Queda por hacer:" -ForegroundColor Cyan
 Write-Host "     1. Abrir la aplicacion en este equipo y entrar con admin@judo.com / admin123"
 Write-Host "     2. Cambiarle la contrasena y dar de alta los usuarios de los puestos    -> guia 3.9"

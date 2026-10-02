@@ -117,14 +117,20 @@ clonar el repositorio. En un servidor recién formateado, con el paquete descomp
 ```bash
 # macOS y Linux
 cd /opt/judoadministracion-api
-sudo ./preparar-servidor.sh
+sudo ./preparar-servidor.sh --licencia ~/licencia-JA-....json
 ```
 
 ```powershell
 # Windows, en PowerShell abierto COMO ADMINISTRADOR
 cd "C:\Program Files\JudoAdministracionServidor"
-powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1
+powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Licencia C:\...\licencia-JA-....json
 ```
+
+**La licencia de este equipo es obligatoria.** Trae las contraseñas de PostgreSQL del servidor,
+cifradas, y el guion no las ve: se las pide ya preparadas al propio binario del servicio. Se pide con
+el código del equipo —`JudoAdministracion.Api --huella`, o la pantalla de licencia de la aplicación—
+y la emite el Titular. Si se prepara el servidor desde la propia aplicación (botón «Instalar el
+servidor en este equipo»), la licencia se carga ahí y no hay que pasar este parámetro.
 
 **Sin parámetros.** Ésa es la idea: un servidor de competición necesita las diez cosas de la lista de
 §1, y tener que acordarse de pedirlas una a una era la principal fuente de instalaciones a medias. En
@@ -135,7 +141,7 @@ diez pasos el guion:
 | 1 | Comprueba que el paquete está donde debe y si el servidor es nuevo o ya estaba montado | §3.5 |
 | 2 | Instala PostgreSQL si falta y comprueba que responde | §3.1 |
 | 3 | Crea la base de datos con la codificación y la ordenación correctas | §3.2 |
-| 4 | Crea `judo_owner` y `judo_api` con contraseñas al azar, las extensiones, y reasigna los objetos que fueran de otra cuenta | §3.3, §10.1 |
+| 4 | Crea `judo_owner` y `judo_api` con las contraseñas de la **licencia**, las extensiones, y reasigna los objetos que fueran de otra cuenta | §3.3, §10.1 |
 | 5 | Emite el certificado con todos los nombres que hacen falta **y lo instala como raíz de confianza de este equipo** | §3.4 |
 | 6 | Escribe el `appsettings.Local.json` del servicio | §3.5 |
 | 7 | Arranca el servicio, crea el esquema, siembra los datos básicos y **hace el cambio de rol** | §3.6 |
@@ -143,11 +149,29 @@ diez pasos el guion:
 | 9 | Pone la línea de *hosts* y abre el 8443 a la subred cerrando el 5432 | §3.8, doc 02 §3.3 |
 | 10 | Registra el servicio del sistema, lo arranca y comprueba que responde por HTTPS de confianza | §3.7 |
 
-Al terminar deja dos cosas en el *home* de quien lo ejecutó:
+Entre los pasos 7 y 8, uno más que no se numera porque no hay nada que decidir: **cierra PostgreSQL
+con la licencia**. Fija sus contraseñas a los roles y al superusuario y deja `pg_hba.conf` admitiendo
+solo conexiones con contraseña y desde el propio equipo. A partir de ahí nadie —tampoco el técnico—
+entra sin contraseña, y las contraseñas no quedan escritas en ningún archivo: viajan en la licencia,
+y el Titular las recupera de ella con la aplicación de licencias si hace falta entrar a un servidor.
+Un servidor ya cerrado se reconoce al relanzar el guion —lo confirma el binario con la licencia
+(`--probar-cierre`), no se deduce de que no se pueda entrar— y no se vuelve a tocar. Si está cerrado
+pero lo han manipulado (otra contraseña del superusuario, `pg_hba.conf` tocado), el guion lo vuelve a
+preparar y a cerrar, y para eso necesita la contraseña del superusuario.
 
-- **`judo-credenciales-servidor.txt`** — las tres contraseñas generadas. Hay que copiarlo fuera del
-  equipo y borrarlo de ahí; sin ellas, una copia de seguridad restaurada no deja el servidor
-  funcionando (§8).
+**La contraseña del superusuario de PostgreSQL**, cuando hace falta —un PostgreSQL que ya la pedía
+antes de esta instalación, un servidor cerrado y manipulado, o `--deshacer` en uno cerrado—, se
+pregunta sin eco si el guion se lanza desde un terminal. Desde otro programa va en la variable de
+entorno **`JUDO_CLAVE_SUPERUSUARIO`**; `--clave-superusuario` / `-ClavePostgres` siguen valiendo, pero
+una contraseña en la línea de órdenes se ve en la lista de procesos y se queda en el historial. Con
+`sudo`, la variable hay que dejarla pasar: `sudo --preserve-env=JUDO_CLAVE_SUPERUSUARIO ./preparar-servidor.sh …`.
+En Windows, cuando es el guion el que instala PostgreSQL, la contraseña provisional que le pone hasta
+el cierre se guarda en `%ProgramData%\JudoAdministracion\postgres-provisional.txt` (solo
+Administradores y SYSTEM) para poder relanzarlo si algo se para antes del cierre, y se borra al
+cerrar.
+
+Al terminar deja en el *home* de quien lo ejecutó:
+
 - **`judo-puestos/`** — el certificado público y los guiones de preparación de puestos, con un
   `LEEME.txt`. Es la carpeta que se copia a un USB y se lleva de puesto en puesto (§4).
 
@@ -389,7 +413,7 @@ psql -U postgres -d JudoAdministracion \
 
 Así generadas no se pueden leer después, claro: para saberlas hay que ponerlas a mano en lugar del
 `openssl rand`, o dejar que el guion de preparación las genere y las anote por ti, que es la razón
-de ser de `~/judo-credenciales-servidor.txt`.
+de ser de la licencia del equipo (el Titular las ve con la aplicación de licencias).
 
 Hay que lanzarlo **con la base de datos ya creada** (§3.2), porque hace
 `ALTER DATABASE … OWNER TO judo_owner`. Es idempotente: volver a ejecutarlo repone los permisos. Y
@@ -1130,9 +1154,9 @@ propósito, igual que la configuración de red: es donde hay que poder entrar cu
 1. Empezar por el SERVIDOR. Los puestos no podrán entrar hasta estar en su misma versión.
 2. Rueda dentada ▸ Actualización ▸ Comprobar si hay una versión nueva.
 3. Leer las novedades. Es donde se dice si esta versión trae algo que haya que saber.
-4. Escribir la contraseña de judo_owner (solo en el servidor).      ─────▶ 7.3
+4. Si la licencia lo pide (servidor de antes de la 1.0.0.57), cargarla; se aplica sola. ─▶ 7.4
 5. Actualizar ahora. Pedirá permisos de administrador UNA vez.
-6. Apuntar lo que enseña al terminar: ruta del volcado y, si se generó, la contraseña nueva.
+6. Apuntar lo que enseña al terminar: la ruta de la copia de seguridad cifrada.
 7. Volver a abrir la aplicación (no se abre sola, a propósito).
 8. Repetir en cada puesto — allí solo hay aplicación, así que no pide contraseña ninguna.
 9. Verificación de §6.
@@ -1221,18 +1245,47 @@ diciéndolo; la aplicación se queda entera en la versión anterior y se puede s
 Si el archivo **ni siquiera existe** después de un intento, es que el guion no ha llegado a
 ejecutarse, y entonces lo que toca es la sustitución a mano de §7.2.
 
-### 7.4 La contraseña de judo_owner
+### 7.4 La licencia del servidor
 
-Es la que aplica los cambios de esquema, y **solo se imprimió una vez**: al final de
-`preparar-servidor` (§3.3). No queda guardada en ningún archivo, a propósito.
+Los cambios de esquema los aplica `judo_owner`, y su contraseña **ya no se teclea**: sale de la
+licencia de este equipo, que la trae cifrada (§3). El diálogo de actualización no pide ninguna
+contraseña; si la licencia instalada sirve, actualiza sin más.
 
-Si no la tienes, el diálogo de actualización trae un botón **«No la tengo»**: pone una contraseña
-nueva, la usa para esta actualización y la enseña al terminar para que la apuntes. No afecta al
-servicio en marcha ni cierra ninguna sesión — la API corre con `judo_api`, que es otro rol.
+Un servidor montado **antes de la 1.0.0.57** tiene una licencia sin contraseñas (o ninguna), y su
+PostgreSQL las contraseñas que se inventó entonces `preparar-servidor`. La primera vez que se
+actualice:
 
-En Windows ese botón pide además la contraseña del superusuario `postgres` (la que pidió el asistente
-al instalar PostgreSQL), porque ahí no hay forma de cambiar una contraseña sin conocer otra. En Linux
-y en macOS no pide nada.
+1. El diálogo enseña el código del equipo y pide **cargar una licencia nueva**, la que emita el
+   Titular con ese código.
+2. Esa licencia trae contraseñas que el servidor todavía no tiene: queda **pendiente de aplicar**
+   (aviso en ámbar, y también al arrancar la aplicación). No es una manipulación y no bloquea nada;
+   el servidor sigue funcionando con las suyas.
+3. Se aplica sola **al principio de la actualización del servicio**, en el mismo guion y con un solo
+   permiso de administrador, o antes, con el botón **«Aplicar la licencia a este servidor»**. Entra
+   como el superusuario local —el usuario de la sesión en Homebrew, el usuario `postgres` en Linux— y,
+   en una sola transacción, cierra PostgreSQL con las contraseñas de la licencia y pone la nueva de
+   `judo_api` en el `appsettings.Local.json` del servicio y en el de la aplicación. **En Windows**
+   pide la contraseña del superusuario `postgres`, la que se puso al instalar PostgreSQL: es lo único
+   con lo que se entra antes del cierre, y solo se usa esa vez.
+4. Al terminar, si la aplicación no se ha cerrado sola, hay que **cerrarla y volver a abrirla**: tiene
+   en memoria la contraseña vieja.
+
+A partir de ahí no vuelve a pedir nada. Volver a pasar `preparar-servidor --licencia` sobre ese
+servidor hace lo mismo.
+
+Una **renovación** tiene que llevar las mismas contraseñas que la licencia anterior: la aplicación de
+licencias las conserva sola si encuentra la anterior en la carpeta de salida o en `emitidas/`, y la
+aplicación rechaza instalar una con otras si el servidor ya está cerrado con las de la instalada.
+
+**Servidor bloqueado.** Si al arrancar se detecta que alguien ha cambiado `pg_hba.conf` o la contraseña
+de un superusuario, la aplicación hace una copia cifrada, bloquea la API (los puestos ven el motivo) y
+aparta la licencia. Para desbloquearlo hace falta una licencia **nueva** del Titular: se carga en la
+pantalla de licencia y se aplica con el mismo botón de arriba, que vuelve a cerrar PostgreSQL y quita el
+bloqueo. Volver a poner la licencia apartada no sirve: queda anotada como invalidada.
+
+La copia de seguridad que hace el actualizador antes de tocar nada queda **cifrada** (`.judocopia`),
+porque un volcado en claro lleva el esquema entero; solo la abre la aplicación de licencias del
+Titular. Se conservan las cinco últimas.
 
 ### 7.5 Tres cosas que conviene tener claras
 
@@ -1312,8 +1365,9 @@ funcionando:
 
 - `appsettings.Local.json` del servicio (cadena de conexión y clave de firma de tokens).
 - `judo-server.pfx`, `judo-server.key` y `judo-server.crt`.
-- Las contraseñas de `judo_owner` y `judo_api` — el guion de preparación las deja en
-  `~/judo-credenciales-servidor.txt` justamente para esto; cópialo fuera del equipo y bórralo de ahí.
+- Las contraseñas de `judo_owner` y `judo_api` no hay que guardarlas: viajan en la licencia del
+  equipo, y el Titular las recupera de ella con la aplicación de licencias. Para restaurar a mano un
+  volcado con `pg_restore`, pídeselas al Titular con el código del equipo.
 
 Que no estén en el mismo disco que la base de datos, ni en el mismo equipo.
 
@@ -1344,9 +1398,21 @@ powershell -ExecutionPolicy Bypass -File .\preparar-servidor.ps1 -Deshacer
 ```
 
 > **`--deshacer` BORRA LA BASE DE DATOS.** Sin preguntar otra vez y sin vuelta atrás. Antes de
-> borrarla saca un volcado al home (`judo-volcado-antes-de-desinstalar-<fecha>.dump`), y **ése es lo
-> único que queda**: cópialo fuera del equipo antes de dar el equipo por limpio. Para conservar los
-> datos, `--sin-base-datos`.
+> borrarla saca un volcado al home, y **ése es lo único que queda**: cópialo fuera del equipo antes de
+> dar el equipo por limpio. Para conservar los datos, `--sin-base-datos`.
+>
+> El volcado sale **cifrado para este equipo** (`judo-volcado-antes-de-desinstalar-<fecha>.judocopia`,
+> el mismo formato que las copias del actualizador, §7.4) si hay licencia: la de `--licencia` /
+> `-Licencia` o, si no se pasa, la que tenga instalada la aplicación de escritorio de quien lanza el
+> guion. Sin licencia, o si el cifrado falla, queda **en claro** (`.dump`) y el guion lo avisa: lleva
+> el esquema y los datos de todos los deportistas.
+
+En un servidor cerrado con la licencia, borrar la base de datos pide la contraseña del superusuario
+(la de la licencia, que tiene el Titular): se pregunta si el guion va en un terminal, o se pasa en
+`JUDO_CLAVE_SUPERUSUARIO` (ver §3). Lo último que hace con ella es devolver PostgreSQL a como estaba
+antes del cierre: el `pg_hba.conf` original y las contraseñas que tenían los superusuarios, y sin el
+rol `postgres` si lo creó el cierre. También borra el `judo-credenciales-servidor.txt` que dejaban
+en el home las instalaciones anteriores a la 1.0.0.57.
 
 Lo que quita, en este orden — el orden importa, porque el volcado tiene que salir antes de borrar la
 base y la base antes de desinstalar PostgreSQL:
@@ -1397,9 +1463,9 @@ hacer sí o sí si el equipo se va a seguir usando para otra cosa.
   arrastrando `JudoAdministracion.app` a la papelera; en Linux, borrando el AppImage.
 - **El `appsettings.Local.json` de un puesto que se tocó a mano.** Si no lo escribió el guion, el
   guion no lo borra: puede llevar algo que alguien puso a propósito. Se dice y se deja.
-- **Los volcados y las credenciales** que la instalación dejó en el home
-  (`judo-credenciales-servidor.txt`, `judo-puestos/`). Llevan contraseñas: cópialos fuera y
-  bórralos a mano cuando ya no hagan falta.
+- **La carpeta `judo-puestos/`** que la instalación dejó en el home (el certificado público y los
+  guiones de preparación de puestos). No lleva contraseñas, pero ya no hace falta: bórrala cuando
+  quieras.
 
 ---
 

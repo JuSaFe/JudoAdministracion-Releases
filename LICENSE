@@ -1,5 +1,5 @@
 LICENCIA DE USO DE JUDOADMINISTRACIÓN
-Versión 1.1 — 2 de septiembre de 2026
+Versión 1.2 — 1 de octubre de 2026
 
 Copyright © 2026 Juan Cotolí San Félix. Todos los derechos reservados.
 
@@ -21,10 +21,11 @@ El Programa tiene dos partes y NO se licencian igual:
     jcotolisanfelix@gmail.com; sus condiciones y su precio, si lo hubiera, se
     acuerdan en cada caso. Ver la cláusula 2.
 
-CAMBIO RESPECTO DE LA VERSIÓN 1.0
-La versión 1.0 de esta licencia no exigía Licencia de Servidor. Conforme a la cláusula
-13.2, ese cambio NO tiene efecto retroactivo: cada copia del Programa se rige por la
-licencia que la acompañaba cuando se obtuvo.
+CAMBIOS RESPECTO DE VERSIONES ANTERIORES
+La versión 1.0 de esta licencia no exigía Licencia de Servidor. La versión 1.2 añade las
+cláusulas 4.9 y 4.10, sobre la base de datos del Programa y sus medidas de protección.
+Conforme a la cláusula 13.2, ningún cambio tiene efecto retroactivo: cada copia del
+Programa se rige por la licencia que la acompañaba cuando se obtuvo.
 
 
 1. DEFINICIONES
@@ -33,8 +34,8 @@ licencia que la acompañaba cuando se obtuvo.
      del Programa.
 
 1.2. «Programa»: la aplicación JudoAdministración, incluyendo su código fuente, código
-     objeto, binarios, recursos, plantillas, documentación y cualquier material asociado
-     publicado por el Titular.
+     objeto, binarios, recursos, plantillas, documentación, el diseño de su base de datos
+     y cualquier material asociado publicado por el Titular.
 
 1.3. «Repositorio Oficial»: https://github.com/JuSaFe/JudoAdministracion, o el que el
      Titular designe como tal en el futuro.
@@ -166,6 +167,21 @@ permita de forma imperativa, queda prohibido:
 4.8. Descompilar o aplicar ingeniería inversa sobre el Programa, más allá de lo que
      permita imperativamente el artículo 100 del Texto Refundido de la Ley de Propiedad
      Intelectual (RDL 1/1996) en materia de interoperabilidad.
+
+4.9. Extraer, copiar, documentar o reutilizar, total o parcialmente, el diseño de la base
+     de datos del Programa —su esquema, tablas, relaciones, funciones, disparadores,
+     consultas y demás lógica—, ya sea a partir del código, de los binarios, de los
+     paquetes de instalación o de un Servicio de Servidor en funcionamiento, y en
+     particular para desarrollar o mejorar otro programa.
+
+4.10. Eludir, desactivar o suprimir las medidas técnicas que protegen el Programa, como
+     el cifrado, la ofuscación, el control de la Licencia de Servidor o las credenciales
+     de acceso a la base de datos; o acceder a la base de datos del Servicio de Servidor
+     por medios distintos del propio Programa sin autorización escrita del Titular.
+
+Las cláusulas 4.9 y 4.10 no afectan a los datos que Usted gestiona con el Programa
+—participantes, inscripciones, resultados y demás—, que son suyos y que puede obtener en
+todo momento mediante las funciones de exportación del Programa.
 
 
 5. MODIFICACIONES Y CONTRIBUCIONES
@@ -310,8 +326,14 @@ software verbatim, free of charge, with all notices intact.
 You MAY NOT: modify the software or create derivative works; distribute modified
 versions; republish the source code in any repository other than the official one; keep,
 develop or promote an independent fork; reuse portions of the code in other projects;
-remove copyright and authorship notices; or tamper with, forge or circumvent the server
-licence file.
+remove copyright and authorship notices; tamper with, forge or circumvent the server
+licence file; extract, copy or reuse the design of the program's database (schema,
+tables, functions, triggers, queries and other logic) from the code, the binaries, the
+installers or a running server; or circumvent the program's technical protection
+measures (encryption, obfuscation, licence control, database credentials), or access the
+server's database by any means other than the program itself without written
+permission. None of this limits your rights over your own competition data, which you
+can export at any time.
 
 Modifications must be proposed to the official repository. A technical fork is allowed
 only to prepare such a proposal and must not be maintained as an independent project.

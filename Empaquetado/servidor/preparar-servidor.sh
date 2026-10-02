@@ -47,6 +47,27 @@ PUERTO_ENTRENADORES=80
 
 CLAVE_OWNER=""
 CLAVE_API=""
+# La licencia de este equipo: trae las contraseñas de PostgreSQL del servidor, cifradas. El guion no
+# llega a verlas; se las pide ya preparadas al binario del servicio (--sql-cierre, --clave-cifrada).
+LICENCIA=""
+# La contraseña del superusuario, cuando hace falta: la de un servidor ya cerrado (la que viaja en la
+# licencia, que solo tiene quien la emite) para --deshacer, o la de un PostgreSQL que ya pedía
+# contraseña antes de esta instalación.
+#
+# Se toma de la variable de entorno JUDO_CLAVE_SUPERUSUARIO, y es la forma buena de pasarla. La opción
+# --clave-superusuario sigue valiendo para no romper notas ni guiones de nadie, pero una contraseña en
+# la línea de órdenes se ve en la lista de procesos («ps» la enseña a cualquier usuario del equipo),
+# se queda en el historial del terminal y, con sudo, en su registro. Si no viene por ninguna de las
+# dos vías y hace falta, se pregunta sin eco (ver pedir_clave_superusuario). Nunca se escribe.
+CLAVE_SUPER="${JUDO_CLAVE_SUPERUSUARIO:-}"
+# Y se quita del entorno en cuanto se ha leído: lo heredaría todo lo que arranca este guion, incluido
+# el servicio que el paso 7 lanza para inicializar el esquema. CLAVE_SUPER no se exporta; a psql le
+# llega solo en el PGPASSWORD de cada llamada que la necesita.
+unset JUDO_CLAVE_SUPERUSUARIO
+# Lo que dice --probar-cierre del PostgreSQL de este equipo: 0 cerrado con ESTA licencia, 10 la
+# licencia todavía no está aplicada, 11 cerrado pero manipulado, 12 no responde. Ver probar_cierre.
+ESTADO_CIERRE=12
+CERRADO=0
 CLAVE_PFX=""
 CLAVE_TOKENS=""
 
@@ -93,8 +114,15 @@ Qué se puede cambiar:
   --puerto N               Puerto de la API (por defecto 8443)
   --superusuario USUARIO   Superusuario de PostgreSQL (por defecto postgres)
 
-  --clave-owner CLAVE      Contraseña de judo_owner (por defecto, se genera)
-  --clave-api CLAVE        Contraseña de judo_api   (por defecto, se genera)
+  --licencia ARCHIVO       La licencia de este equipo (OBLIGATORIA). Trae las contraseñas de
+                           PostgreSQL del servidor; nadie las ve, solo el programa. Con
+                           --deshacer es opcional y sirve para cifrar el volcado (si no se da,
+                           se usa la que tenga instalada la aplicación de este equipo).
+  --clave-superusuario C   Contraseña del superusuario de PostgreSQL. MEJOR por la variable de
+                           entorno JUDO_CLAVE_SUPERUSUARIO: en la línea de órdenes se ve en la
+                           lista de procesos y queda en el historial. Si hace falta y no se da,
+                           se pregunta. En un servidor ya cerrado es la de la licencia, que solo
+                           tiene quien la emite, y solo hace falta para --deshacer.
   --clave-pfx CLAVE        Contraseña del certificado (por defecto, se genera)
 
   --regenerar-certificado  Rehacer el certificado aunque ya exista
@@ -112,14 +140,25 @@ Desinstalar:
 --deshacer BORRA LA BASE DE DATOS. Se lleva, por este orden: el servicio del sistema, la base de
 datos y sus roles, PostgreSQL, el certificado del almacén de confianza, la línea del hosts, las
 reglas del cortafuegos y la carpeta del servicio con sus copias. Antes de borrar la base de datos
-saca un volcado al home, que es lo único que queda al terminar. Pruébalo con --simular primero.
+saca un volcado al home, que es lo único que queda al terminar: cifrado para este equipo si hay
+licencia (--licencia, o la de la aplicación), y en claro si no. Pruébalo con --simular primero.
+
+En un servidor ya cerrado con la licencia, borrar la base de datos pide la contraseña del
+superusuario (la de la licencia). Pásala así, para que no se vea en la lista de procesos:
+
+  read -rs JUDO_CLAVE_SUPERUSUARIO; export JUDO_CLAVE_SUPERUSUARIO
+  sudo --preserve-env=JUDO_CLAVE_SUPERUSUARIO ./preparar-servidor.sh --deshacer
+
+o lanza el guion desde un terminal y la preguntará.
 
 PostgreSQL solo se desinstala si en el clúster NO hay más bases de datos que las de esta
 aplicación: en un equipo que ya lo tenía puesto de antes, desinstalarlo se llevaría datos que no
 son de aquí. Si las hay, se dice y se deja el gestor donde está.
 
-Al terminar deja las contraseñas en ~/judo-credenciales-servidor.txt y, en ~/judo-puestos/, todo
-lo que hay que llevarse a los puestos: el certificado público y los guiones de preparación.
+Las contraseñas de PostgreSQL vienen en la licencia y no se escriben en ningún archivo legible: al
+terminar, PostgreSQL solo admite conexiones con contraseña y desde este mismo equipo. En
+~/judo-puestos/ queda todo lo que hay que llevarse a los puestos: el certificado público y los
+guiones de preparación.
 AYUDA
 }
 
@@ -132,8 +171,8 @@ while [[ $# -gt 0 ]]; do
         --ip)                     IP_SERVIDOR="$2"; shift 2 ;;
         --puerto)                 PUERTO="$2"; shift 2 ;;
         --superusuario)           SUPERUSUARIO="$2"; shift 2 ;;
-        --clave-owner)            CLAVE_OWNER="$2"; shift 2 ;;
-        --clave-api)              CLAVE_API="$2"; shift 2 ;;
+        --licencia)               LICENCIA="$2"; shift 2 ;;
+        --clave-superusuario)     CLAVE_SUPER="$2"; shift 2 ;;
         --clave-pfx)              CLAVE_PFX="$2"; shift 2 ;;
         --sin-postgresql)         SIN_POSTGRESQL=1; shift ;;
         --sin-servicio)           SIN_SERVICIO=1; shift ;;
@@ -196,7 +235,6 @@ if [[ -n "${SUDO_USER:-}" ]]; then
 else
     HOGAR="$HOME"
 fi
-CREDENCIALES="$HOGAR/judo-credenciales-servidor.txt"
 PARA_PUESTOS="$HOGAR/judo-puestos"
 
 # ── Utilidades ────────────────────────────────────────────────────────────────────────────────────
@@ -484,9 +522,20 @@ localizar_pg() {
 
 # Leer un valor de un appsettings.Local.json ya escrito. No hace falta un analizador de JSON: los
 # archivos que lee esto son los que escribe este mismo guion, con una propiedad por línea.
+#
+# Con sudo cuando no se puede leer directamente: la configuración del servicio es de root y con
+# permisos 600, así que lanzado sin sudo —en un equipo donde la carpeta del servicio es del usuario,
+# por ejemplo— un grep sobre ella no ve nada. Y no ver nada no daba error, que es lo peor: se tomaba
+# por «la configuración no usa judo_api», solo se avisaba y la contraseña vieja se quedaba puesta,
+# con lo que el servicio ya no podía entrar en cuanto el cierre del final cambiaba la de judo_api.
+leer_archivo() {                                    # leer_archivo <archivo>
+    [[ -f "$1" ]] || return 1
+    if [[ -r "$1" ]]; then cat "$1"; else sudo cat "$1"; fi
+}
+
 leer_json() {                                       # leer_json <archivo> <propiedad>
     [[ -f "$1" ]] || return 1
-    sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\(.*\)\".*/\1/p" "$1" | head -1
+    leer_archivo "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
 }
 
 # Cifrar la contraseña de la base de datos para ESTE equipo antes de escribirla en un
@@ -523,15 +572,27 @@ proteger() {                                        # proteger <texto>
 MODO_PSQL=""
 resolver_psql() {
     localizar_pg || true
-    if psql -U "$SUPERUSUARIO" -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+    # Con la contraseña de la licencia (--clave-superusuario), en un servidor ya cerrado: el único
+    # modo que queda, porque el cierre quita la entrada sin contraseña.
+    #
+    # Todas las pruebas llevan -w («no preguntes nunca la contraseña»). Sin él, contra un PostgreSQL
+    # que la pide —uno ya cerrado, o uno que ya la pedía— psql la pregunta por /dev/tty y no por la
+    # entrada estándar, así que el >/dev/null de aquí no la calla: la pregunta aparecía en medio de la
+    # instalación, y lanzado desde la aplicación, sin terminal delante, se quedaba esperando para
+    # siempre. Una prueba solo tiene que saber si se entra; si hace falta contraseña, la respuesta es
+    # «no», y quien llama decide si la pide (pedir_clave_superusuario).
+    if [[ -n "$CLAVE_SUPER" ]] \
+       && PGPASSWORD="$CLAVE_SUPER" psql -h 127.0.0.1 -U "$SUPERUSUARIO" -w -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+        MODO_PSQL="clave"
+    elif psql -U "$SUPERUSUARIO" -w -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
         MODO_PSQL="usuario"
-    elif sudo -n -u "$SUPERUSUARIO" psql -d postgres -tAc 'SELECT 1' >/dev/null 2>&1 \
-      || sudo    -u "$SUPERUSUARIO" psql -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+    elif sudo -n -u "$SUPERUSUARIO" psql -w -d postgres -tAc 'SELECT 1' >/dev/null 2>&1 \
+      || sudo    -u "$SUPERUSUARIO" psql -w -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
         MODO_PSQL="sudo"
-    elif psql -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+    elif psql -w -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
         MODO_PSQL="local"
     elif [[ $SOY_ROOT -eq 1 ]] \
-      && como_usuario "${BIN_PG:+$BIN_PG/}psql" -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
+      && como_usuario "${BIN_PG:+$BIN_PG/}psql" -w -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
         MODO_PSQL="sesion"
     else
         return 1
@@ -544,7 +605,50 @@ psql_super() {
         sudo)    sudo -u "$SUPERUSUARIO" psql "$@" ;;
         local)   psql "$@" ;;
         sesion)  como_usuario "${BIN_PG:+$BIN_PG/}psql" "$@" ;;
+        clave)   PGPASSWORD="$CLAVE_SUPER" psql -h 127.0.0.1 -U "$SUPERUSUARIO" -w "$@" ;;
     esac
+}
+
+# La contraseña del superusuario, preguntada sin eco, cuando no ha venido por la variable de entorno
+# (ni por --clave-superusuario) y no se ha podido entrar sin ella. Devuelve error si no hay a quién
+# preguntar —lanzado desde la aplicación, o con --si— o si ya se tenía una y es ésa la que no vale:
+# volver a preguntar lo mismo no arregla nada, y quien llama ya sabe explicar qué ha pasado.
+#
+# read -s y no un argumento: lo que se teclea no sale en pantalla, ni en la lista de procesos, ni en
+# el historial del terminal.
+pedir_clave_superusuario() {
+    [[ -z "$CLAVE_SUPER" ]] || return 1
+    [[ $SIN_PREGUNTAS -eq 0 && -t 0 ]] || return 1
+    read -rs -p "   Contraseña del superusuario \"$SUPERUSUARIO\" de PostgreSQL: " CLAVE_SUPER || true
+    echo
+    [[ -n "$CLAVE_SUPER" ]]
+}
+
+# Si el PostgreSQL de este equipo está cerrado con ESTA licencia. Lo dice el binario del servicio
+# (--probar-cierre), que entra con las contraseñas de la licencia y mira las reglas de pg_hba.conf
+# sin enseñar nada; deja el código en ESTADO_CIERRE y la explicación en DETALLE_CIERRE.
+#
+# Antes esto se DEDUCÍA: «responde pero no consigo entrar» se tomaba por «cerrado». Y eso es lo mismo
+# que se ve en un servidor de antes de la 1.0.0.57, sin cerrar, en el que simplemente no se acierta
+# con la contraseña del superusuario: el guion se saltaba la base de datos, los roles, el esquema y
+# el cierre, escribía una configuración con una contraseña de judo_api que el rol no tenía y
+# terminaba en «Servidor preparado». Ahora solo cuenta como cerrado lo que el binario CONFIRMA.
+DETALLE_CIERRE=""
+probar_cierre() {
+    local codigo=0
+    DETALLE_CIERRE="$("$BINARIO" --licencia "$LICENCIA" --probar-cierre 5432 "$BD" 2>&1 >/dev/null)" \
+        || codigo=$?
+    case "$codigo" in
+        0|10|11|12) ESTADO_CIERRE=$codigo ;;
+        *)          ESTADO_CIERRE=12 ;;                 # cualquier otra cosa: no se sabe
+    esac
+}
+
+# Si PostgreSQL acepta conexiones, sin entrar: es lo que distingue un servidor parado de uno CERRADO
+# con su licencia, que responde pero no deja entrar sin contraseña.
+pg_listo() {
+    localizar_pg || true
+    "${BIN_PG:+$BIN_PG/}pg_isready" -h 127.0.0.1 -q >/dev/null 2>&1
 }
 
 # Arrancar el servicio y aceptar conexiones no son la misma cosa. Entre una y otra hay un arranque
@@ -726,8 +830,64 @@ volcar_base_datos() {
         chmod 600 "$destino" 2>/dev/null || true
         bien "volcado en $destino"
         VOLCADO="$destino"
+        cifrar_volcado
     else
         aviso "el volcado ha fallado. La base de datos se va a borrar de todos modos (--deshacer)"
+    fi
+}
+
+# La licencia con la que cifrar el volcado: la que se haya pasado con --licencia o, si no, la que
+# tiene instalada la aplicación de escritorio de quien lanza el guion. Las mismas carpetas que usa
+# ella (ServicioLicencia.Ruta, que es la ApplicationData de .NET): en macOS la de Application
+# Support y en Linux la de ~/.config. Del home de SUDO_USER, no del de root.
+licencia_para_volcado() {
+    if [[ -n "$LICENCIA" ]]; then
+        [[ -f "$LICENCIA" ]] && { printf '%s' "$LICENCIA"; return 0; }
+        return 1
+    fi
+
+    local candidata
+    if [[ "$SISTEMA" == "Darwin" ]]; then
+        candidata="$HOGAR/Library/Application Support/JudoAdministracion/licencia.json"
+    else
+        candidata="$HOGAR/.config/JudoAdministracion/licencia.json"
+    fi
+    [[ -f "$candidata" ]] && { printf '%s' "$candidata"; return 0; }
+    return 1
+}
+
+# Un volcado en claro lleva el esquema entero —tablas, funciones, disparadores— y los datos de todos
+# los deportistas, y se queda en el home. Así que, si hay licencia, se cifra para este equipo con el
+# mismo formato que las copias del actualizador (--cifrar-copia, que deja <volcado>.judocopia y
+# borra el original; ver CopiaCifrada).
+#
+# Si no se puede —no hay licencia, o el binario falla—, se deja en claro y se dice bien alto. Son los
+# datos del propio cliente, y entre un volcado en claro y ninguno, mejor en claro: la base de datos
+# se borra justo después y no hay otra copia.
+cifrar_volcado() {
+    local licencia cifrado="${VOLCADO%.dump}.judocopia" error
+
+    if ! licencia="$(licencia_para_volcado)"; then
+        aviso "${AMARILLO}NO hay licencia con la que cifrarlo: el volcado queda EN CLARO${FIN}"
+        aviso "  lleva el esquema y los datos de todos los deportistas; guárdalo en sitio seguro"
+        aviso "  (para que salga cifrado, pasa a --deshacer la licencia: --licencia <archivo>)"
+        return 0
+    fi
+
+    if [[ -x "$BINARIO" ]] \
+       && error="$("$BINARIO" --licencia "$licencia" --cifrar-copia "$VOLCADO" 2>&1 >/dev/null)" \
+       && [[ -f "$cifrado" ]]; then
+        [[ -n "${SUDO_USER:-}" ]] && sudo chown "$SUDO_USER" "$cifrado" 2>/dev/null || true
+        chmod 600 "$cifrado" 2>/dev/null || true
+        # Por si el binario no hubiera llegado a borrar el original: dejarlo al lado del cifrado
+        # sería no haber cifrado nada.
+        rm -f "$VOLCADO" 2>/dev/null || sudo rm -f "$VOLCADO" 2>/dev/null || true
+        bien "volcado cifrado para este equipo: $cifrado"
+        VOLCADO="$cifrado"
+    else
+        aviso "${AMARILLO}NO he podido cifrar el volcado: queda EN CLARO${FIN}"
+        [[ -n "${error:-}" ]] && aviso "  $error"
+        aviso "  lleva el esquema y los datos de todos los deportistas; guárdalo en sitio seguro"
     fi
 }
 
@@ -739,6 +899,7 @@ pg_dump_super() {
         sudo)    sudo -u "$SUPERUSUARIO" pg_dump -Fc -f "$2" "$1" ;;
         local)   pg_dump -Fc -f "$2" "$1" ;;
         sesion)  como_usuario "${BIN_PG:+$BIN_PG/}pg_dump" -Fc -f "$2" "$1" ;;
+        clave)   PGPASSWORD="$CLAVE_SUPER" pg_dump -h 127.0.0.1 -U "$SUPERUSUARIO" -w -Fc -f "$2" "$1" ;;
     esac
 }
 
@@ -809,8 +970,11 @@ otras_bases_de_datos() {
     [[ "$cuenta" =~ ^[0-9]+$ ]] && echo "$cuenta" || echo "desconocido"
 }
 
-desinstalar_postgresql() {
-    local otras; otras="$(otras_bases_de_datos)"
+# Recibe la cuenta de otras_bases_de_datos ya hecha, y no la pregunta: cuando se llama, el cierre ya
+# se ha devuelto (restaurar_cierre) y el superusuario puede haber dejado de tener la contraseña con
+# la que ha entrado este guion.
+desinstalar_postgresql() {                          # desinstalar_postgresql <otras bases>
+    local otras="$1"
 
     if [[ "$otras" == "desconocido" ]]; then
         aviso "no he podido comprobar si hay otras bases de datos: NO desinstalo PostgreSQL"
@@ -819,9 +983,7 @@ desinstalar_postgresql() {
 
     if [[ "$otras" -gt 0 ]]; then
         aviso "en este clúster quedan $otras bases de datos que no son de esta aplicación:"
-        psql_super -d postgres -tAc \
-            "SELECT '     · ' || datname FROM pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres', '$BD');" \
-            2>/dev/null || true
+        [[ -n "${LISTA_OTRAS:-}" ]] && printf '%s\n' "$LISTA_OTRAS"
         aviso "PostgreSQL se queda instalado. Desinstalarlo se llevaría esos datos por delante."
         return 0
     fi
@@ -998,6 +1160,59 @@ quitar_config_aplicacion() {
     fi
 }
 
+# Devolver el PostgreSQL a como estaba antes del cierre: el pg_hba.conf original y las contraseñas que
+# tenían los superusuarios, y sin el rol «postgres» si lo creó el cierre. El SQL lo da el binario
+# (--sql-restaurar, ver CierrePostgres.SqlRestaurar), que es quien sabe dónde dejó el cierre lo que
+# había; antes había aquí una copia que solo devolvía pg_hba.conf, y un equipo que ya tenía su
+# PostgreSQL para otras cosas se quedaba con su superusuario entrando con la contraseña de la licencia.
+#
+# Tiene que ser lo ÚLTIMO que se hace como superusuario: en cuanto se aplica, ese superusuario vuelve
+# a su contraseña de antes y a su pg_hba.conf de antes, y la siguiente llamada a psql —que entraría
+# con la de la licencia— ya no pasaría. Por eso la cuenta de otras bases de datos se hace antes.
+#
+# En una sola transacción (-1), por lo mismo que el cierre: o vuelve todo, o no vuelve nada.
+restaurar_cierre() {
+    local sql
+
+    if [[ ! -x "$BINARIO" ]]; then
+        aviso "no está el binario del servicio ($BINARIO): no puedo devolver el pg_hba.conf ni las"
+        aviso "  contraseñas de antes del cierre (están al lado de pg_hba.conf, .judo-original y .judo-roles)"
+        return 0
+    fi
+
+    if [[ $SIMULAR -eq 1 ]]; then
+        echo "   ${AMARILLO}[simulado]${FIN} devolvería el pg_hba.conf y las contraseñas de antes del cierre"
+        return 0
+    fi
+
+    if sql="$("$BINARIO" --sql-restaurar 2>/dev/null)" && [[ -n "$sql" ]] \
+       && printf '%s\n' "$sql" | psql_super -X -q -1 -v ON_ERROR_STOP=1 -d postgres -f - >/dev/null 2>&1; then
+        resultado "pg_hba.conf y contraseñas de los superusuarios de antes del cierre devueltos"
+    else
+        aviso "no he podido devolver lo de antes del cierre (está al lado de pg_hba.conf,"
+        aviso "  .judo-original y .judo-roles); el superusuario sigue con la contraseña de la licencia"
+    fi
+}
+
+# El archivo de credenciales que dejaban las instalaciones de antes de la 1.0.0.57, en el home de quien
+# las lanzó: la contraseña del .pfx y las de PostgreSQL de entonces, en claro. Desde que las
+# contraseñas viajan en la licencia ya no se escribe, pero las instalaciones antiguas lo dejaron ahí
+# y ninguna versión lo quitaba. Se borra en cuanto el servidor queda cerrado (sus contraseñas de
+# PostgreSQL ya no valen, pero la del certificado sí) y al desinstalar.
+CREDENCIALES_ANTIGUAS="$HOGAR/judo-credenciales-servidor.txt"
+borrar_credenciales_antiguas() {
+    [[ -e "$CREDENCIALES_ANTIGUAS" ]] || return 0
+    if [[ $SIMULAR -eq 1 ]]; then
+        resultado "borraría $CREDENCIALES_ANTIGUAS (contraseñas en claro de una instalación antigua)"
+        return 0
+    fi
+    if rm -f "$CREDENCIALES_ANTIGUAS" 2>/dev/null || sudo rm -f "$CREDENCIALES_ANTIGUAS" 2>/dev/null; then
+        bien "borrado $CREDENCIALES_ANTIGUAS (contraseñas en claro de una instalación antigua)"
+    else
+        aviso "no he podido borrar $CREDENCIALES_ANTIGUAS: lleva contraseñas en claro, bórralo a mano"
+    fi
+}
+
 if [[ $DESHACER -eq 1 ]]; then
     # set +e para todo el bloque, al contrario que el resto del guion.
     #
@@ -1038,7 +1253,13 @@ if [[ $DESHACER -eq 1 ]]; then
         paso "3/8  PostgreSQL"
         igual "se conserva (--sin-base-datos)"
     else
-        if resolver_psql; then
+        # Sin contraseña primero; si PostgreSQL responde pero no deja entrar (un servidor cerrado con
+        # la licencia), se pregunta la del superusuario, si hay a quién.
+        if ! resolver_psql && pg_listo && pedir_clave_superusuario; then
+            resolver_psql
+        fi
+
+        if [[ -n "$MODO_PSQL" ]]; then
             EXISTE_BD="$(psql_super -d postgres -tAc \
                 "SELECT 1 FROM pg_database WHERE datname = '$BD';" 2>/dev/null || true)"
 
@@ -1047,7 +1268,29 @@ if [[ $DESHACER -eq 1 ]]; then
             borrar_base_datos
 
             paso "3/8  PostgreSQL"
-            desinstalar_postgresql
+            # Lo que haya que preguntarle al superusuario, antes de devolver el cierre: después ya
+            # no se entraría con la contraseña de la licencia (ver restaurar_cierre).
+            OTRAS="$(otras_bases_de_datos)"
+            LISTA_OTRAS="$(psql_super -d postgres -tAc \
+                "SELECT '     · ' || datname FROM pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres', '$BD');" \
+                2>/dev/null || true)"
+
+            # El pg_hba.conf y las contraseñas de los superusuarios de antes del cierre, si se
+            # guardaron: si PostgreSQL se queda (porque tiene otras bases), que se quede como estaba.
+            # Sin esto el superusuario seguiría entrando SOLO con la contraseña de la licencia —la
+            # conserva aunque se borren judo_owner y judo_api—, que en ese equipo no conoce nadie.
+            restaurar_cierre
+            desinstalar_postgresql "$OTRAS"
+        elif pg_listo; then
+            # Responde, pero cerrado con la licencia: sin su contraseña no se puede ni volcar ni
+            # borrar. Se dice cómo, y lo demás se desinstala igual.
+            paso "2/8  Base de datos"
+            aviso "PostgreSQL está cerrado con la licencia de este servidor: no puedo volcar ni borrar"
+            aviso "  la base \"$BD\" sin la contraseña del superusuario. La tiene quien emite las"
+            aviso "  licencias: relanza --deshacer desde un terminal (la preguntará) o pásala en la"
+            aviso "  variable de entorno JUDO_CLAVE_SUPERUSUARIO (sudo --preserve-env=JUDO_CLAVE_SUPERUSUARIO)."
+            paso "3/8  PostgreSQL"
+            igual "cerrado con la licencia: no lo toco"
         else
             paso "2/8  Base de datos"
             aviso "PostgreSQL no responde, así que no puedo volcarla ni borrarla."
@@ -1072,6 +1315,7 @@ if [[ $DESHACER -eq 1 ]]; then
 
     paso "8/8  Carpetas"
     borrar_carpetas
+    borrar_credenciales_antiguas
 
     echo
     if [[ $SIMULAR -eq 1 ]]; then
@@ -1176,19 +1420,85 @@ fi
 CONSERVAR_CONFIG=0
 if [[ -f "$CONFIG" && $FORZAR_CONFIGURACION -eq 0 ]]; then
     CONSERVAR_CONFIG=1
-    igual "hay configuración previa: se conservará, contraseñas incluidas"
+fi
 
-    # De esa configuración se puede recuperar lo que hace falta para los pasos que vienen después
-    # —configurar la aplicación de escritorio, sobre todo—, así que una segunda ejecución sirve
-    # para completar un servidor a medias en vez de quedarse a la mitad.
-    CADENA_EXISTENTE="$(leer_json "$CONFIG" ConnectionString || true)"
-    if [[ "$CADENA_EXISTENTE" == *"Username=judo_api;"* ]]; then
-        CLAVE_API="${CADENA_EXISTENTE##*Password=}"
-        bien "contraseña de judo_api recuperada de la configuración existente"
-    fi
+# La contraseña del certificado no se guarda en ningún otro sitio que la propia configuración, así que
+# se recupera SIEMPRE que haya una: sin ella, reescribir la configuración (--forzar-configuracion, o
+# la de un servidor ya cerrado; ver el paso 6) obligaría a rehacer el certificado y a repartirlo otra
+# vez por los puestos. Es lo mismo que hace el guion de Windows.
+if [[ -f "$CONFIG" && -z "$CLAVE_PFX" ]]; then
+    CLAVE_PFX="$(leer_json "$CONFIG" CertificadoPassword || true)"
+fi
+
+# Una configuración que todavía apunta a judo_owner es una instalación a medias, no una instalación
+# hecha. La que escribe el paso 6 lleva ese rol y la inicialización puesta, y dura solo lo que tarda
+# el paso 7 en crear el esquema: al terminar bien, el propio paso 7 la reescribe con judo_api. Si
+# sigue ahí es que una ejecución anterior se quedó por el camino.
+#
+# Conservarla sería lo peor de los dos mundos: el paso 7 se saltaría —o sea, el esquema seguiría sin
+# crearse— y el servicio quedaría corriendo de forma permanente con el rol que puede alterarlo, que
+# es justo lo que la separación de roles existe para evitar. Así que no se conserva: en un servidor
+# sin cerrar se rehace el paso 7, y en uno ya cerrado se reescribe directamente con judo_api (paso
+# 6). El certificado y la clave de firma de tokens sí se conservan. Igual que en el guion de Windows.
+if [[ $CONSERVAR_CONFIG -eq 1 ]] \
+   && [[ "$(leer_json "$CONFIG" ConnectionString 2>/dev/null || true)" == *Username=judo_owner\;* ]]; then
+    CONSERVAR_CONFIG=0
+    CLAVE_TOKENS="$(leer_json "$CONFIG" ClaveFirmaTokens || true)"
+    aviso "la configuración anterior se quedó a medias: todavía apunta a judo_owner"
+    aviso "se rehace (el certificado y la clave de firma de tokens se conservan)"
+fi
+
+if [[ $CONSERVAR_CONFIG -eq 1 ]]; then
+    igual "hay configuración previa: se conservará (la contraseña de la base, de la licencia)"
+elif [[ -f "$CONFIG" ]]; then
+    bien "la configuración se reescribirá"
 else
     bien "servidor nuevo: se generará la configuración"
 fi
+
+# La licencia de este equipo, que trae las contraseñas de PostgreSQL del servidor. Sin ella no se
+# sigue: este guion ya no inventa contraseñas, porque las que valen son las que viajan en la licencia
+# y las que quien la emite puede recuperar.
+#
+# El guion NO las ve. Al binario del servicio se le piden dos cosas que no las enseñan: el SQL del
+# cierre, que lleva verificadores SCRAM y no contraseñas, y las de judo_owner y judo_api ya cifradas
+# para este equipo, que es como van en appsettings.Local.json (ver CierrePostgres y SecretoLocal).
+[[ -n "$LICENCIA" ]] || fallo "Falta la licencia de este equipo (--licencia <archivo>).
+     Pídela con el código de este equipo: $("$BINARIO" --huella 2>/dev/null || echo '(no he podido calcularlo)')"
+[[ -f "$LICENCIA" ]] || fallo "No encuentro la licencia en $LICENCIA."
+
+# Lo que se le pide al binario se recoge SOLO de su salida estándar, y sus errores aparte.
+#
+# Antes iban mezclados (2>&1) en la misma variable, y cualquier cosa que el binario escribiera en la
+# salida de error —un aviso de .NET, una advertencia del registro— acababa DENTRO del SQL que luego
+# se le pasaba a psql. Y se mira el código de salida de todas las llamadas, no solo de la primera:
+# una salida vacía también es un fallo, porque un SQL vacío «se aplica» sin error y no hace nada.
+ERROR_BINARIO=""
+del_binario() {                                     # del_binario <variable> <argumentos...>
+    local destino="$1" salida errores codigo=0
+    shift
+    errores="$(mktemp)"
+    salida="$("$BINARIO" "$@" 2>"$errores")" || codigo=$?
+    ERROR_BINARIO="$(cat "$errores" 2>/dev/null || true)"
+    rm -f "$errores"
+    printf -v "$destino" '%s' "$salida"
+    if [[ $codigo -ne 0 || -z "$salida" ]]; then
+        [[ -n "$ERROR_BINARIO" ]] || ERROR_BINARIO="(el binario ha terminado con código $codigo y sin respuesta)"
+        return 1
+    fi
+}
+
+del_binario SQL_CIERRE --licencia "$LICENCIA" --sql-cierre \
+    || fallo "La licencia no sirve para este servidor: $ERROR_BINARIO"
+del_binario SQL_CONTRASENAS --licencia "$LICENCIA" --sql-contrasenas \
+    || fallo "No he podido sacar de la licencia las contraseñas de los roles: $ERROR_BINARIO"
+del_binario CLAVE_OWNER --licencia "$LICENCIA" --clave-cifrada judo_owner \
+    || fallo "No he podido cifrar para este equipo la contraseña de judo_owner: $ERROR_BINARIO"
+del_binario CLAVE_API --licencia "$LICENCIA" --clave-cifrada judo_api \
+    || fallo "No he podido cifrar para este equipo la contraseña de judo_api: $ERROR_BINARIO"
+[[ "$CLAVE_OWNER" == cifrado:* && "$CLAVE_API" == cifrado:* ]] \
+    || fallo "No he podido preparar las contraseñas de la licencia para este equipo."
+bien "licencia de este equipo con las contraseñas del servidor"
 
 # ── 2. PostgreSQL ─────────────────────────────────────────────────────────────────────────────────
 
@@ -1247,9 +1557,35 @@ else
     ESPERA_PG=10
 fi
 
-if ! esperar_postgresql "$ESPERA_PG"; then
+# Un servidor ya cerrado con su licencia responde pero no deja entrar sin contraseña. Se reconoce
+# aquí, ANTES de intentar entrar como superusuario —y de esperar, y de reintentar arranques que no
+# van a cambiar nada—, y se reconoce porque el binario lo CONFIRMA (probar_cierre), no porque no se
+# consiga entrar. Lo que dice:
+#
+#   0   cerrado con esta licencia: la base de datos no se toca y no hace falta ninguna contraseña.
+#   10  la licencia todavía no está aplicada (un servidor de antes de la 1.0.0.57, o uno que nunca
+#       llegó al cierre): el camino normal, que necesita entrar como superusuario y cierra al final.
+#   11  cerrado con esta licencia pero manipulado (la contraseña del superusuario cambiada, o
+#       pg_hba.conf tocado a mano): se trata como uno sin cerrar —hace falta entrar como
+#       superusuario— y el cierre del final lo deja otra vez como debe.
+#   12  no responde, o no se sabe: el camino normal; si luego arranca, se vuelve a preguntar.
+if [[ $RECIEN_INSTALADO -eq 0 ]]; then
+    probar_cierre
+    if [[ $ESTADO_CIERRE -eq 0 ]]; then
+        CERRADO=1
+    elif [[ $ESTADO_CIERRE -eq 11 ]]; then
+        aviso "PostgreSQL está cerrado con esta licencia, pero lo han tocado:"
+        [[ -n "$DETALLE_CIERRE" ]] && aviso "  $DETALLE_CIERRE"
+        aviso "se vuelve a preparar y a cerrar; para eso hace falta entrar como superusuario"
+    fi
+fi
+
+if [[ $CERRADO -eq 0 ]] && ! esperar_postgresql "$ESPERA_PG" && ! pg_listo; then
     # Un segundo intento de arranque antes de darlo por perdido: en macOS "brew services start" a
     # veces vuelve bien sin que launchd haya llegado a levantar el servicio.
+    #
+    # Solo si de verdad no responde: si responde y lo que falla es la entrada del superusuario,
+    # reiniciarlo no cambia nada (eso se resuelve abajo).
     if [[ "$SISTEMA" == "Darwin" ]] && localizar_brew; then
         aviso "no responde; reintentando el arranque del servicio"
         # La fórmula que toca, que no tiene por qué ser la 18: si el equipo ya traía un
@@ -1266,7 +1602,37 @@ if ! esperar_postgresql "$ESPERA_PG"; then
     fi
 fi
 
-if [[ -z "$MODO_PSQL" ]]; then
+# No respondía al principio y ahora sí: puede ser un servidor ya cerrado que estaba parado. Se le
+# vuelve a preguntar al binario antes de dar por perdida la entrada del superusuario.
+if [[ -z "$MODO_PSQL" && $CERRADO -eq 0 && $ESTADO_CIERRE -eq 12 && $RECIEN_INSTALADO -eq 0 ]] && pg_listo; then
+    probar_cierre
+    [[ $ESTADO_CIERRE -eq 0 ]] && CERRADO=1
+fi
+
+# Responde pero no deja entrar sin contraseña: la del superusuario, si hay a quién preguntarla.
+if [[ -z "$MODO_PSQL" && $CERRADO -eq 0 ]] && pg_listo && pedir_clave_superusuario; then
+    resolver_psql || true
+fi
+
+# Y si aun así no se entra, se para aquí. Nunca se sigue en silencio: sin el superusuario no hay
+# base de datos, ni roles, ni esquema, ni cierre, y lo que se escribiera a continuación sería una
+# configuración que no puede funcionar.
+if [[ -z "$MODO_PSQL" && $CERRADO -eq 0 ]] && pg_listo; then
+    if [[ $ESTADO_CIERRE -eq 11 ]]; then
+        fallo "PostgreSQL está cerrado con esta licencia pero manipulado, y no consigo entrar como
+     superusuario para volver a cerrarlo. Hace falta su contraseña (la de la licencia, que tiene
+     quien la emite): lanza el guion desde un terminal y la preguntará, o pásala en la variable de
+     entorno JUDO_CLAVE_SUPERUSUARIO (con sudo: sudo --preserve-env=JUDO_CLAVE_SUPERUSUARIO …)."
+    fi
+    fallo "PostgreSQL responde, pero no consigo entrar como su superusuario (\"$SUPERUSUARIO\").
+     ${DETALLE_CIERRE:+Comprobación del cierre: $DETALLE_CIERRE
+     }Si este PostgreSQL ya pedía contraseña, lanza el guion desde un terminal y la preguntará, o
+     pásala en la variable de entorno JUDO_CLAVE_SUPERUSUARIO (con sudo:
+     sudo --preserve-env=JUDO_CLAVE_SUPERUSUARIO …). Si el superusuario no se llama así, indícalo
+     con --superusuario."
+fi
+
+if [[ -z "$MODO_PSQL" && $CERRADO -eq 0 ]]; then
     diagnostico_postgresql
     fallo "PostgreSQL está instalado pero no responde.
      Comprueba que el servicio está arrancado:
@@ -1275,8 +1641,13 @@ if [[ -z "$MODO_PSQL" ]]; then
      Y vuelve a lanzar el guion: lo ya hecho se respeta."
 fi
 
+if [[ $CERRADO -eq 1 ]]; then
+    igual "PostgreSQL en marcha y ya cerrado con esta licencia (comprobado): la base de datos no se toca"
+    VERSION_PG=99
+else
 VERSION_PG="$(psql_super -d postgres -tAc 'SHOW server_version;' | cut -d. -f1)"
 bien "PostgreSQL $VERSION_PG en marcha (psql: modo $MODO_PSQL)"
+fi
 
 # El PostgreSQL de Homebrew arranca con el launchd del usuario, no con el del sistema: al encender el
 # equipo no sube hasta que ese usuario inicia sesión. El servicio de la API sí arranca antes, así que
@@ -1292,6 +1663,18 @@ if [[ "$VERSION_PG" -lt 13 ]]; then
 fi
 
 # ── 3. Base de datos ──────────────────────────────────────────────────────────────────────────────
+#
+# Los pasos 3 y 4 necesitan el superusuario. En un servidor ya cerrado con su licencia no se puede
+# entrar sin contraseña, y tampoco hace falta: la base, los roles y las extensiones están desde la
+# primera vez.
+
+ESCUCHA_PG="?"
+if [[ $CERRADO -eq 1 ]]; then
+    paso "3/10  Base de datos \"$BD\""
+    igual "servidor cerrado con la licencia: ya existe, no se toca"
+    paso "4/10  Roles y extensiones"
+    igual "servidor cerrado con la licencia: ya están, no se tocan"
+else
 
 paso "3/10  Base de datos \"$BD\""
 
@@ -1339,26 +1722,20 @@ paso "4/10  Roles y extensiones"
 YA_HABIA_ROLES="$(psql_super -d postgres -tAc \
     "SELECT count(*) FROM pg_roles WHERE rolname IN ('judo_owner','judo_api');")"
 
-if [[ $CONSERVAR_CONFIG -eq 1 ]]; then
-    # Roles y permisos sí, contraseñas no: las que hay son las que conoce la configuración existente.
-    psql_super -q -d "$BD" -v rotar_claves=off -v bd="$BD" -f "$SQL_ROLES"
-    bien "roles comprobados y permisos repuestos (contraseñas sin tocar)"
+# Roles y permisos, sin contraseñas (rotar_claves=off): las de la licencia van justo después.
+psql_super -q -d "$BD" -v rotar_claves=off -v bd="$BD" -f "$SQL_ROLES"
+if [[ "$YA_HABIA_ROLES" == "2" ]]; then
+    bien "judo_owner y judo_api ya existían: permisos repuestos"
 else
-    [[ -n "$CLAVE_OWNER" ]] || CLAVE_OWNER="$(generar_clave)"
-    [[ -n "$CLAVE_API"   ]] || CLAVE_API="$(generar_clave)"
-
-    psql_super -q -d "$BD" \
-        -v clave_owner="$CLAVE_OWNER" \
-        -v clave_api="$CLAVE_API" \
-        -v bd="$BD" \
-        -f "$SQL_ROLES"
-
-    if [[ "$YA_HABIA_ROLES" == "2" ]]; then
-        bien "judo_owner y judo_api ya existían: contraseñas y permisos repuestos"
-    else
-        bien "judo_owner y judo_api creados"
-    fi
+    bien "judo_owner y judo_api creados"
 fi
+
+# Y sus contraseñas, las de la licencia (las de judo_owner y judo_api; la del superusuario va con el
+# cierre del final). Ya, y no al final: en Linux PostgreSQL pide contraseña por TCP de fábrica, y el
+# paso 7 entra así con judo_owner.
+printf '%s\n' "$SQL_CONTRASENAS" | psql_super -q -d postgres -v ON_ERROR_STOP=1 -f - >/dev/null \
+    || fallo "No he podido poner a los roles las contraseñas de la licencia."
+bien "contraseñas de la licencia puestas (sin pasar por este guion)"
 
 # Objetos que ya estaban ahí y no son de judo_owner.
 #
@@ -1437,6 +1814,10 @@ EXTENSIONES="$(psql_super -d "$BD" -tAc \
 [[ "$EXTENSIONES" == "pgcrypto, unaccent" ]] || fallo "Faltan extensiones ($EXTENSIONES).
      En Linux suele ser que falta el paquete postgresql-contrib (guía §3.1)."
 bien "extensiones unaccent y pgcrypto instaladas"
+
+# Se mira ahora, que todavía se puede entrar; se comprueba en el paso 9.
+ESCUCHA_PG="$(psql_super -d postgres -tAc 'SHOW listen_addresses;' 2>/dev/null || echo '?')"
+fi
 
 # ── 5. Certificado HTTPS ──────────────────────────────────────────────────────────────────────────
 
@@ -1638,6 +2019,27 @@ JSON
 
 if [[ $CONSERVAR_CONFIG -eq 1 ]]; then
     igual "appsettings.Local.json ya existe, se conserva (--forzar-configuracion para reescribirlo)"
+
+    # Salvo la contraseña de la base, que pasa a ser la de la licencia: un servidor de antes de la
+    # 1.0.0.57 tenía otra, y después del cierre solo vale esta.
+    #
+    # Se lee con leer_archivo (con sudo si hace falta: es de root y 600) y se reescribe por una
+    # tubería, sin temporales: el temporal de antes se quedaba en /tmp, con la configuración dentro,
+    # cada vez que la escritura fallaba y set -e cortaba el guion antes de su rm.
+    TEXTO_CONFIG="$(leer_archivo "$CONFIG")" \
+        || fallo "No puedo leer $CONFIG para ponerle la contraseña de la licencia.
+     Lanza el guion con sudo."
+    PATRON_API='"ConnectionString"[^"]*"[^"]*Username=judo_api;'
+    if [[ "$TEXTO_CONFIG" =~ $PATRON_API ]]; then
+        printf '%s\n' "$TEXTO_CONFIG" \
+            | sed "s|\(\"ConnectionString\"[^\"]*\"[^\"]*Password=\)[^\"]*|\1$CLAVE_API|" \
+            | escribir "$CONFIG"
+        permisos 600 "$CONFIG"
+        bien "contraseña de la base de datos tomada de la licencia"
+    else
+        aviso "la configuración existente no usa judo_api; relanza con --forzar-configuracion"
+    fi
+    TEXTO_CONFIG=""
     aviso "la clave de firma de tokens NO se toca: cambiarla cerraría todas las sesiones abiertas"
 else
     if [[ -z "${CLAVE_PFX:-}" ]]; then
@@ -1645,10 +2047,23 @@ else
      Usa --clave-pfx <contraseña> o --regenerar-certificado."
     fi
     # Larga y estable: si cambia entre reinicios, todas las sesiones abiertas dejan de valer y hay
-    # que volver a entrar en los cinco puestos.
-    CLAVE_TOKENS="$(openssl rand -base64 48 | tr -d '\n')"
-    escribir_configuracion judo_owner "$CLAVE_OWNER" true
-    bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
+    # que volver a entrar en los cinco puestos. Por eso, si se ha podido recuperar de una
+    # configuración a medias, se reutiliza en vez de generar otra.
+    [[ -n "$CLAVE_TOKENS" ]] || CLAVE_TOKENS="$(openssl rand -base64 48 | tr -d '\n')"
+
+    if [[ $CERRADO -eq 1 ]]; then
+        # En un servidor ya cerrado el paso 7 no se ejecuta —el esquema ya está, y el superusuario no
+        # se puede usar—, así que no habría nadie que pasara después la configuración de judo_owner
+        # a judo_api: el servicio se quedaría para siempre con el rol que puede alterar el esquema y
+        # la inicialización puesta. Se escribe directamente la definitiva. La contraseña de judo_api
+        # es la de la licencia, que es la que tiene el rol: el binario acaba de confirmar que el
+        # servidor está cerrado con ESTA licencia.
+        escribir_configuracion judo_api "$CLAVE_API" false
+        bien "escrita con el rol judo_api, sin inicialización (servidor ya cerrado: el esquema ya está)"
+    else
+        escribir_configuracion judo_owner "$CLAVE_OWNER" true
+        bien "escrita con el rol judo_owner, para crear el esquema en el primer arranque"
+    fi
 fi
 
 # La carpeta de imágenes que se puede tocar en este equipo: el logo de la federación, el pie de
@@ -1727,6 +2142,8 @@ paso "7/10  Esquema y datos básicos"
 
 if [[ $SIN_ESQUEMA -eq 1 ]]; then
     aviso "omitido por --sin-esquema"
+elif [[ $CERRADO -eq 1 ]]; then
+    igual "servidor cerrado con la licencia: el esquema ya está"
 elif [[ $CONSERVAR_CONFIG -eq 1 ]]; then
     igual "se conserva la configuración existente: no se relanza la inicialización"
     aviso "si esta es una actualización con cambios de esquema, sigue la guía §7"
@@ -1827,20 +2244,43 @@ else
 
     # Que judo_api sea capaz de leer y NO de tocar el esquema es la comprobación que justifica los
     # dos roles; si esto no se cumple, algo se ha concedido de más.
-    if PGPASSWORD="$CLAVE_API" psql -h localhost -U judo_api -d "$BD" \
-         -tAc "SELECT count(*) FROM eventos;" >/dev/null 2>&1; then
+    #
+    # Con SET ROLE desde el superusuario y no entrando como judo_api: su contraseña viene en la
+    # licencia y este guion no la conoce. Lo que se comprueba son los permisos, y SET ROLE pasa a
+    # tener exactamente los de judo_api.
+    if psql_super -d "$BD" -v ON_ERROR_STOP=1 \
+         -tAc "SET ROLE judo_api; SELECT count(*) FROM eventos;" >/dev/null 2>&1; then
         bien "judo_api puede leer los datos"
     else
         fallo "judo_api no puede leer. Revisa el paso 4."
     fi
 
-    if PGPASSWORD="$CLAVE_API" psql -h localhost -U judo_api -d "$BD" \
-         -c "CREATE TABLE comprobacion_permisos (x int);" >/dev/null 2>&1; then
-        PGPASSWORD="$CLAVE_API" psql -h localhost -U judo_api -d "$BD" \
-            -c "DROP TABLE comprobacion_permisos;" >/dev/null 2>&1 || true
+    if psql_super -d "$BD" -v ON_ERROR_STOP=1 \
+         -c "SET ROLE judo_api; CREATE TABLE comprobacion_permisos (x int);" >/dev/null 2>&1; then
+        psql_super -d "$BD" -c "DROP TABLE IF EXISTS comprobacion_permisos;" >/dev/null 2>&1 || true
         aviso "judo_api PUEDE crear tablas y no debería. Revisa los permisos del paso 4."
     else
         bien "judo_api no puede alterar el esquema (correcto)"
+    fi
+fi
+
+# ── El cierre de PostgreSQL ───────────────────────────────────────────────────────────────────────
+#
+# Lo último que toca la base de datos, y a propósito: a partir de aquí ya no se entra sin contraseña,
+# tampoco este guion. Fija las contraseñas de la licencia (verificadores SCRAM) a los superusuarios,
+# judo_owner y judo_api, y deja pg_hba.conf con tres líneas: desde este equipo y con contraseña. La
+# original queda al lado, para --deshacer (ver CierrePostgres).
+#
+# En UNA transacción (-1): si algo falla a mitad, no se queda nada a medias —ni las contraseñas
+# cambiadas con pg_hba.conf todavía abierto, ni pg_hba.conf cerrado con contraseñas que no son las de
+# la licencia—. -X para que un ~/.psqlrc de quien sea no se meta por medio.
+if [[ $CERRADO -eq 0 ]]; then
+    if printf '%s\n' "$SQL_CIERRE" | psql_super -X -q -1 -d postgres -v ON_ERROR_STOP=1 -f - >/dev/null; then
+        CERRADO=1
+        bien "PostgreSQL cerrado con la licencia: solo se entra con contraseña y desde este equipo"
+    else
+        fallo "No he podido cerrar PostgreSQL con la licencia. Lo que se ha hecho hasta aquí vale:
+     arregla lo que diga arriba y vuelve a lanzar el guion."
     fi
 fi
 
@@ -1978,8 +2418,9 @@ fi
 # Que PostgreSQL no escuche en la red es la mitad importante del asunto, y no depende del
 # cortafuegos sino de listen_addresses. De fábrica está bien; se comprueba porque una instalación
 # heredada puede venir abierta.
-ESCUCHA_PG="$(psql_super -d postgres -tAc 'SHOW listen_addresses;' 2>/dev/null || echo '?')"
-if [[ "$ESCUCHA_PG" == "localhost" || "$ESCUCHA_PG" == "127.0.0.1" ]]; then
+if [[ "$ESCUCHA_PG" == "?" ]]; then
+    igual "listen_addresses no se ha podido mirar (servidor cerrado); se comprobó al instalar"
+elif [[ "$ESCUCHA_PG" == "localhost" || "$ESCUCHA_PG" == "127.0.0.1" ]]; then
     bien "PostgreSQL escucha solo en local"
 else
     aviso "PostgreSQL escucha en \"$ESCUCHA_PG\" y debería hacerlo solo en local (doc 02, §3.4)"
@@ -2155,37 +2596,20 @@ TEXTO
     [[ -n "${SUDO_USER:-}" ]] && sudo chown -R "$SUDO_USER" "$PARA_PUESTOS" 2>/dev/null || true
 fi
 
-if [[ $CONSERVAR_CONFIG -eq 0 ]]; then
-    umask 077
-    cat > "$CREDENCIALES" <<TEXTO
-Credenciales del servidor de JudoAdministración
-Generadas por preparar-servidor.sh
-
-Servidor           $NOMBRE_SERVIDOR ($IP_SERVIDOR), puerto $PUERTO
-Base de datos      $BD
-Carpeta            $DIR_SERVICIO
-
-PostgreSQL
-  judo_owner       $CLAVE_OWNER      (dueño del esquema; migraciones y copias de seguridad)
-  judo_api         $CLAVE_API      (con el que corre el servicio y la aplicación de este equipo)
-
-Certificado
-  $(basename "$PFX")   $CLAVE_PFX
-
-GUARDA ESTE ARCHIVO FUERA DE ESTE EQUIPO. Sin estas contraseñas, una copia de seguridad
-restaurada no deja el servidor funcionando (Documentación/01-Guía-de-Instalación.md, §8).
-TEXTO
-    chmod 600 "$CREDENCIALES"
-    [[ -n "${SUDO_USER:-}" ]] && chown "$SUDO_USER" "$CREDENCIALES" 2>/dev/null || true
+# Ya no se deja ningún archivo con contraseñas: las de PostgreSQL viajan en la licencia y las recupera
+# quien la emite, y la del certificado está en appsettings.Local.json, que es de solo lectura para
+# root. Antes quedaba ~/judo-credenciales-servidor.txt con todo en claro, y ése se borra aquí en cuanto
+# el servidor está cerrado (ver borrar_credenciales_antiguas): con el cierre, sus contraseñas de
+# PostgreSQL ya no valen, y la del certificado no tiene por qué seguir a la vista.
+if [[ $CERRADO -eq 1 ]]; then
+    borrar_credenciales_antiguas
 fi
 
-# Antes de dar el servidor por preparado, las dos cosas que no puede no tener.
+# Antes de dar el servidor por preparado, lo que no puede no tener: su configuración.
 #
-# Está aquí, al final y por separado, porque son las dos que se echan de menos MÁS TARDE —cuando ya
-# no hay nadie delante del terminal— y las dos que no se pueden recomponer adivinando: sin
-# appsettings.Local.json el servicio no arranca, y sin el archivo de credenciales no hay forma de
-# restaurar una copia de seguridad. Si por lo que sea falta alguno, se dice aquí en rojo y no en una
-# línea perdida veinte pasos atrás.
+# Está aquí, al final y por separado, porque se echa de menos MÁS TARDE —cuando ya no hay nadie
+# delante del terminal—: sin appsettings.Local.json el servicio no arranca. Si falta, se dice aquí en
+# rojo y no en una línea perdida veinte pasos atrás.
 FALTA_ALGO=0
 
 if [[ ! -f "$CONFIG" ]]; then
@@ -2196,15 +2620,6 @@ if [[ ! -f "$CONFIG" ]]; then
     echo "   Sin ella el servicio no puede arrancar. Vuelve a lanzar el guion." >&2
 fi
 
-if [[ $CONSERVAR_CONFIG -eq 0 && ! -f "$CREDENCIALES" ]]; then
-    FALTA_ALGO=1
-    echo
-    echo "${ROJO}NO se ha escrito el archivo de credenciales:${FIN}" >&2
-    echo "   $CREDENCIALES" >&2
-    echo "   Las contraseñas de judo_owner y del certificado no están en ningún otro sitio." >&2
-    echo "   Relanza el guion con --forzar-configuracion para volver a generarlas (ojo: eso" >&2
-    echo "   cierra las sesiones abiertas)." >&2
-fi
 
 echo
 if [[ $FALTA_ALGO -eq 1 ]]; then
@@ -2213,11 +2628,9 @@ else
     echo "${VERDE}Servidor preparado.${FIN}"
 fi
 echo
-if [[ $CONSERVAR_CONFIG -eq 0 ]]; then
-    echo "   Contraseñas guardadas en:  $CREDENCIALES"
-    echo "   ${AMARILLO}Cópialas fuera de este equipo y bórralas de aquí cuando lo hayas hecho.${FIN}"
-    echo
-fi
+echo "   PostgreSQL queda cerrado con la licencia: solo se entra con contraseña y desde este"
+echo "   equipo. Las contraseñas no están escritas en ningún sitio legible; viajan en la licencia."
+echo
 echo "   ${AZUL}Queda por hacer:${FIN}"
 echo "     1. Abrir la aplicación en este equipo y entrar con admin@judo.com / admin123"
 echo "     2. Cambiarle la contraseña y dar de alta los usuarios de los puestos    → guía §3.9"
