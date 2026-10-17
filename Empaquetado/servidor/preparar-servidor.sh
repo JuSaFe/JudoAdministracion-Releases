@@ -1686,8 +1686,22 @@ if [[ "$EXISTE_BD" == "1" ]]; then
 else
     # Las comillas dobles son imprescindibles: sin ellas PostgreSQL pasa el nombre a minúsculas y la
     # cadena de conexión de la aplicación, que pide "JudoAdministracion", no la encontraría.
-    psql_super -d postgres -c "CREATE DATABASE \"$BD\" ENCODING 'UTF8' TEMPLATE template0;"
-    bien "creada con codificación UTF8"
+    #
+    # La ordenación, en castellano siempre y no la que traiga el clúster, que sale del sistema: en
+    # uno en inglés la Ñ queda mezclada con la N. Primero la de ICU, que no depende del sistema
+    # (PostgreSQL 15 o posterior), y después la de libc. Una que no existe es un error limpio que no
+    # crea nada; la última es la de siempre, y si falla es por otra cosa y lo dice. Igual que en Windows.
+    CREADA_CON=""
+    if psql_super -q -d postgres -c "CREATE DATABASE \"$BD\" ENCODING 'UTF8' LOCALE_PROVIDER icu ICU_LOCALE 'es-ES' TEMPLATE template0;" >/dev/null 2>&1; then
+        CREADA_CON="ICU es-ES"
+    elif psql_super -q -d postgres -c "CREATE DATABASE \"$BD\" ENCODING 'UTF8' LOCALE 'es_ES.UTF-8' TEMPLATE template0;" >/dev/null 2>&1; then
+        CREADA_CON="es_ES.UTF-8 del sistema"
+    else
+        aviso "no hay ordenación castellana en este PostgreSQL: se crea con la del sistema"
+        psql_super -d postgres -c "CREATE DATABASE \"$BD\" ENCODING 'UTF8' TEMPLATE template0;"
+        CREADA_CON="la del sistema"
+    fi
+    bien "creada con codificación UTF8 y ordenación $CREADA_CON"
 fi
 
 CODIFICACION="$(psql_super -d postgres -tAc \
@@ -1701,10 +1715,11 @@ bien "codificación UTF8"
 # resultado que viene llevan una sola letra acentuada, así que ninguna conversión de codificación por
 # el camino puede hacer que "Ávila" deje de coincidir consigo mismo y salte el aviso con una
 # ordenación que en realidad era correcta. Las acentuadas van con escapes U&'\00C1' de SQL, en ASCII.
+# Nuria y Ozores pillan la ordenación inglesa, donde Ñuño sale antes que Nuria.
 # El guion de Windows hace exactamente esta misma comprobación.
 SQL_ORDEN="SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES"
-SQL_ORDEN="$SQL_ORDEN (U&'\\00C1vila'),('Alicante'),('Zamora'),(U&'\\00D1u\\00F1o')) t(x)) ="
-SQL_ORDEN="$SQL_ORDEN U&'Alicante|\\00C1vila|\\00D1u\\00F1o|Zamora' THEN 'ok' ELSE 'no' END;"
+SQL_ORDEN="$SQL_ORDEN (U&'\\00C1vila'),('Alicante'),('Zamora'),(U&'\\00D1u\\00F1o'),('Nuria'),('Ozores')) t(x)) ="
+SQL_ORDEN="$SQL_ORDEN U&'Alicante|\\00C1vila|Nuria|\\00D1u\\00F1o|Ozores|Zamora' THEN 'ok' ELSE 'no' END;"
 
 if [[ "$(psql_super -d "$BD" -tAc "$SQL_ORDEN")" == "ok" ]]; then
     bien "ordenación correcta para castellano"

@@ -354,8 +354,14 @@ psql -U postgres -d JudoAdministracion -c "SELECT count(*) FROM eventos;"
 ### 3.2 Crear la base de datos
 
 ```bash
-psql -U postgres -c "CREATE DATABASE \"JudoAdministracion\" ENCODING 'UTF8' TEMPLATE template0;"
+psql -U postgres -c "CREATE DATABASE \"JudoAdministracion\" ENCODING 'UTF8' LOCALE_PROVIDER icu ICU_LOCALE 'es-ES' TEMPLATE template0;"
 ```
+
+**La ordenación va siempre en castellano**, y no la que traiga PostgreSQL: el instalador la toma
+del sistema, y en un Windows o un Linux en inglés la Ñ queda mezclada con la N en todos los
+listados. `ICU_LOCALE 'es-ES'` no depende del idioma del equipo (PostgreSQL 15 o posterior). Si ese
+PostgreSQL no trae ICU, se usa la española del sistema: `LOCALE 'Spanish_Spain.1252'` en Windows,
+`LOCALE 'es_ES.UTF-8'` en macOS y Linux. `preparar-servidor` prueba las tres en ese orden.
 
 **Las comillas dobles alrededor del nombre son obligatorias.** PostgreSQL pasa a minúsculas todo
 identificador sin comillar, así que `CREATE DATABASE JudoAdministracion` crea
@@ -369,20 +375,20 @@ Comprobar la codificación y la ordenación:
 psql -U postgres -l
 ```
 
-Debe mostrar `UTF8` y un *Collate* con un idioma dentro: en macOS y Linux acaba en `.UTF-8`
-(`es_ES.UTF-8`, `en_US.UTF-8`… cualquiera sirve; el equipo de desarrollo usa `en_US.UTF-8`) y en
-Windows tiene la forma `Spanish_Spain.1252` o `es-ES`, que **también son correctas**: en Windows la
-ordenación no depende de la página de códigos que aparece en el nombre. Lo único que está mal es
-`C` o `POSIX`: con esa, los listados salen con los apellidos acentuados todos al final.
+Debe mostrar `UTF8` y una ordenación española: *Locale Provider* `icu` con `es-ES`, o un
+*Collate* `es_ES.UTF-8` (macOS y Linux) o `Spanish_Spain.1252` / `es-ES` (Windows; ahí la
+ordenación no depende de la página de códigos que aparece en el nombre). Con `C` o `POSIX` los
+apellidos acentuados salen todos al final, y con una inglesa (`en_US.UTF-8`,
+`English_United States.1252`) la Ñ va mezclada con la N.
 Verificación directa:
 
 ```bash
 psql -U postgres -d JudoAdministracion -tAc \
-  "SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES (U&'\00C1vila'),('Alicante'),('Zamora'),(U&'\00D1u\00F1o')) t(x)) = U&'Alicante|\00C1vila|\00D1u\00F1o|Zamora' THEN 'ok' ELSE 'no' END;"
+  "SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES (U&'\00C1vila'),('Alicante'),('Zamora'),(U&'\00D1u\00F1o'),('Nuria'),('Ozores')) t(x)) = U&'Alicante|\00C1vila|Nuria|\00D1u\00F1o|Ozores|Zamora' THEN 'ok' ELSE 'no' END;"
 ```
 
-Correcto: `ok`. Si sale `no`, la ordenación es `C` y hay que recrear la base de datos con
-`LC_COLLATE` adecuado (se hace ahora sin coste; después obligaría a volcar y restaurar).
+Correcto: `ok`. Si sale `no`, la ordenación no es la española y hay que recrear la base de datos
+con la orden de arriba (se hace ahora sin coste; después obligaría a volcar y restaurar).
 
 La consulta va escrita con escapes `U&'\00C1'`, que son las mismas letras acentuadas pero en ASCII,
 y responde `ok`/`no` en lugar del listado. No es un capricho: la consola de Windows trabaja en su

@@ -982,7 +982,7 @@ Bien "servicio encontrado en $Dir"
 # aplicacion no encuentre el servicio sola.
 $rutaRecomendada = Join-Path $env:ProgramFiles 'JudoAdministracionServidor'
 if (([IO.Path]::GetFullPath($Dir)).TrimEnd('\') -ine $rutaRecomendada.TrimEnd('\')) {
-    Fallo ("Esta carpeta es $Dir y deberia ser $rutaRecomendada (doc 00, §8.1).`n" +
+    Fallo ("Esta carpeta es $Dir y deberia ser $rutaRecomendada (doc 00, apartado 8.1).`n" +
            "        Mueve ahi el paquete descomprimido y vuelve a ejecutar el guion.")
 }
 
@@ -1461,15 +1461,40 @@ else {
     # La solucion es la misma que ya usa 01_roles.sql: pasar el nombre por -v y dejar que sea psql,
     # leyendo un archivo con -f, quien interprete :"bd" como identificador entrecomillado. Dentro
     # de un archivo no hay linea de comandos de por medio, asi que el problema no se puede dar.
+    #
+    # La ordenacion, en castellano SIEMPRE, y no la que traiga el cluster: el instalador de EDB la
+    # toma del Windows, y en uno en ingles la enye queda mezclada con la N en todos los listados. Se
+    # prueba primero la de ICU, que no depende del sistema (PostgreSQL 15 o posterior), y despues
+    # la de Windows por sus dos nombres. Una que no exista es un error limpio que no crea nada, asi
+    # que se pasa a la siguiente; la ultima es la de siempre, sin ordenacion propia, y si esa falla
+    # es por otra cosa y PsqlSuper lo dice.
     $sqlCrear = Join-Path $env:TEMP "judo-crear-bd.sql"
-    Set-Content -Path $sqlCrear -Encoding ascii -Value 'CREATE DATABASE :"bd" ENCODING ''UTF8'' TEMPLATE template0;'
+    $ordenaciones = @(
+        @{ Clausula = "LOCALE_PROVIDER icu ICU_LOCALE 'es-ES' ";  Nombre = "ICU es-ES" },
+        @{ Clausula = "LOCALE 'es-ES' ";                          Nombre = "es-ES de Windows" },
+        @{ Clausula = "LOCALE 'Spanish_Spain.1252' ";             Nombre = "Spanish_Spain de Windows" })
+    $creadaCon = $null
     try {
-        PsqlSuper -Argumentos @("-v", "bd=$Bd", "-f", $sqlCrear)
+        foreach ($ordenacion in $ordenaciones) {
+            Set-Content -Path $sqlCrear -Encoding ascii -Value ('CREATE DATABASE :"bd" ENCODING ''UTF8'' ' + $ordenacion.Clausula + 'TEMPLATE template0;')
+            $anterior = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & $psql -U $Superusuario -d postgres -v ON_ERROR_STOP=1 -v "bd=$Bd" -f $sqlCrear 2>&1 | Out-Null
+            $codigoCrear = $LASTEXITCODE
+            $ErrorActionPreference = $anterior
+            if ($codigoCrear -eq 0) { $creadaCon = $ordenacion.Nombre; break }
+        }
+        if (-not $creadaCon) {
+            Aviso "no hay ordenacion castellana en este PostgreSQL: se crea con la del sistema"
+            Set-Content -Path $sqlCrear -Encoding ascii -Value 'CREATE DATABASE :"bd" ENCODING ''UTF8'' TEMPLATE template0;'
+            PsqlSuper -Argumentos @("-v", "bd=$Bd", "-f", $sqlCrear)
+            $creadaCon = "la del sistema"
+        }
     }
     finally {
         Remove-Item $sqlCrear -Force -ErrorAction SilentlyContinue
     }
-    Bien "creada con codificacion UTF8"
+    Bien "creada con codificacion UTF8 y ordenacion $creadaCon"
 }
 
 $codificacion = PsqlValor -Consulta "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = '$Bd';"
@@ -1484,9 +1509,11 @@ Bien "codificacion UTF8"
 # leerse a si mismo si se guardo sin BOM- y cualquiera de las dos basta para que "Avila" con tilde
 # deje de coincidir consigo mismo y el aviso salte con una ordenacion que en realidad era correcta.
 # Las mayusculas y minusculas acentuadas van escritas con escapes U&'\00C1' de SQL, que son ASCII.
+# Nuria y Ozores estan para pillar la ordenacion inglesa: ahi la enye va con la N y Nunyo sale antes
+# que Nuria; sin ellas la lista daba "ok" tambien en ingles.
 $sqlOrden = "SELECT CASE WHEN (SELECT string_agg(x, '|' ORDER BY x) FROM (VALUES " +
-            "(U&'\00C1vila'),('Alicante'),('Zamora'),(U&'\00D1u\00F1o')) t(x)) = " +
-            "U&'Alicante|\00C1vila|\00D1u\00F1o|Zamora' THEN 'ok' ELSE 'no' END;"
+            "(U&'\00C1vila'),('Alicante'),('Zamora'),(U&'\00D1u\00F1o'),('Nuria'),('Ozores')) t(x)) = " +
+            "U&'Alicante|\00C1vila|Nuria|\00D1u\00F1o|Ozores|Zamora' THEN 'ok' ELSE 'no' END;"
 
 if ((PsqlValor -Base $Bd -Consulta $sqlOrden) -eq "ok") { Bien "ordenacion correcta para castellano" }
 else {
@@ -1689,7 +1716,9 @@ if ($conservarConfig) {
 
     # Salvo la contraseña de la base, que pasa a ser la de la licencia: un servidor de antes de la
     # 1.0.0.57 tenía otra, y después del cierre solo vale esta.
-    $textoConfig = Get-Content -Raw $config
+    # ReadAllText y no Get-Content: Windows PowerShell 5.1 lee un UTF-8 sin BOM como ANSI, y al
+    # reescribirlo en UTF-8 las tildes que hubiera quedarian codificadas dos veces.
+    $textoConfig = [IO.File]::ReadAllText($config)
     if ($textoConfig -match '"ConnectionString"[^"]*"[^"]*Username=judo_api;') {
         $textoConfig = [regex]::Replace($textoConfig,
             '("ConnectionString"[^"]*"[^"]*Password=)[^"]*', { param($m) $m.Groups[1].Value + $ClaveApi })
