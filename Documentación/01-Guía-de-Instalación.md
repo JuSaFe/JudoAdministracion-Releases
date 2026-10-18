@@ -1494,6 +1494,7 @@ hacer sí o sí si el equipo se va a seguir usando para otra cosa.
 | Los listados salen ordenados de forma extraña, con los acentos al final | Ordenación `C` en la base de datos | §3.2 |
 | Los cambios de un puesto no se ven en otro | Capa de aplicación, no instalación | [03-Arquitectura-Cliente-Servidor.md](03-Arquitectura-Cliente-Servidor.md) |
 | Al arrancar: `must be owner of table paises` | La base de datos venía de otra cuenta | §10.1 |
+| Windows: la actualización falla con «El instalador ha terminado con el código 5» | El antivirus (McAfee, visto el 18-10-2026) bloquea los archivos que se sustituyen en `Program Files`, y el instalador silencioso contesta «Anular» | §10.2 |
 
 ### 10.1 Si la base de datos ya existía: «must be owner of table»
 
@@ -1521,3 +1522,22 @@ compartidos del clúster, así que con una cuenta personal que sea superusuario 
 delante la propiedad de `postgres`, `template0` y `template1`. Hay que ir objeto a objeto, tablas y
 vistas primero —las secuencias de columnas `serial` cambian con su tabla y no se pueden cambiar
 sueltas— y después las rutinas.
+
+### 10.2 Windows: la actualización termina con el código 5
+
+El código 5 de Inno Setup es «instalación anulada». La actualización lanza el instalador en
+silencio, y si un archivo de `C:\Program Files\JudoAdministracion` no se puede sustituir, el
+instalador contesta «Anular» él solo. La versión instalada se queda como estaba: no se rompe nada.
+
+La causa vista hasta ahora es **el antivirus**: McAfee bloqueaba la sustitución de los archivos.
+Instalando a mano, el aviso de McAfee aparece en pantalla y hubo que abrirlo como administrador
+para dejar pasar la instalación.
+
+1. Ejecuta el instalador de la versión nueva con doble clic, con la aplicación cerrada. Si el
+   antivirus o un archivo bloqueado lo paran, se verá el aviso y se podrá reintentar.
+2. Para que la próxima actualización no tropiece otra vez, añade en el antivirus una exclusión
+   para `C:\Program Files\JudoAdministracion` y `C:\Program Files\JudoAdministracionServidor`.
+
+Desde la 1.0.0.65, la actualización deja el registro del propio instalador en
+`%LOCALAPPDATA%\JudoAdministracion\instalador.log` y copia sus últimas líneas a
+`actualizacion.log`: ahí sale qué archivo no pudo sustituir.

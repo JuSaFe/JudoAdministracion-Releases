@@ -854,7 +854,11 @@ if ($Deshacer) {
 
     Paso "6/8  Cortafuegos"
 
-    $reglas = @('JudoAdministracion-Api', 'JudoAdministracion-PostgreSQL-Bloqueado', 'JudoAdministracion-Entrenadores')
+    # Las del ping y la del programa las pone la pantalla de red de la aplicacion al configurar el
+    # servidor.
+    $reglas = @('JudoAdministracion-Api', 'JudoAdministracion-PostgreSQL-Bloqueado', 'JudoAdministracion-Entrenadores',
+                'JudoAdministracion-Ping', 'JudoAdministracion-Api-Programa',
+                'JudoAdministracion-Entrenadores-Programa')
     $quitadas = 0
     foreach ($nombreRegla in $reglas) {
         if (Get-NetFirewallRule -Name $nombreRegla -ErrorAction SilentlyContinue) {
