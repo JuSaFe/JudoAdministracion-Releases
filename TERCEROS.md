@@ -106,6 +106,7 @@ Términos oficiales: <https://www.questpdf.com/license/>
 | `Assets/Images/logo.png` | El logo que usan los informes y la pantalla de inicio mientras nadie ponga otro. Hoy es una copia del de la Federación Valenciana, así que **es también marca de un tercero** |
 | `Assets/Flags/*.png` | Banderas de países, comunidades y clubes. Las de club son marcas de sus clubes |
 | `Assets/Images/Mat*.png` | Ilustraciones de tatami del proyecto |
+| `JudoAdministracion.Datos/Recursos/Fuentes/LiberationSans-*.ttf` | Tipografía **Liberation Sans 2.1.5** (Red Hat, sobre Arimo de Google), **SIL OFL 1.1**. La de los cuadros de combate en PDF, incrustada en `JudoAdministracion.Datos.dll`. Se redistribuye sin cambios y con su licencia al lado (`LICENSE-LiberationSans.txt`) |
 
 Quien reutilice este código en otro contexto debe **retirar o sustituir los logotipos federativos**.
 No hace falta recompilar para ello: basta con sustituir `logo.png` (y, si se quiere pie de
