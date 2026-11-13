@@ -24,7 +24,9 @@ Red: **192.168.2.0/24** · Máscara: **255.255.255.0** · Puerta de enlace: **19
 | `192.168.2.5` – `192.168.2.9` | 5 | **Puestos de administración** | La aplicación de escritorio |
 | `192.168.2.11` – `192.168.2.20` | 10 | **Marcadores de tatami** | Leen combates, anotan puntos, envían resultado |
 | `192.168.2.21` – `192.168.2.30` | 10 | **Pantallas de visualización** | Muestran tatamis y sus 4 próximos combates |
-| `192.168.2.31` – `192.168.2.99` | 69 | *Libre* | Ampliación futura |
+| `192.168.2.31` – `192.168.2.40` | 10 | **CARE (JudoReplay)** | Graban la cámara de su tatami y tienen el reproductor de los árbitros |
+| `192.168.2.41` – `192.168.2.45` | 5 | **Comisionados (JudoReplay)** | Ven el vídeo de todos los tatamis; se usan dos y quedan tres de reserva |
+| `192.168.2.46` – `192.168.2.99` | 54 | *Libre* | Ampliación futura |
 | `192.168.2.100` – `192.168.2.199` | 100 | **Pool DHCP** | Dispositivos no planificados (ver §1.2) |
 | `192.168.2.200` – `192.168.2.254` | 55 | *Libre* | Pruebas y diagnóstico |
 
@@ -75,10 +77,15 @@ Rellena y guarda esta tabla en cada evento; es lo primero que se consulta cuando
 | … | | | | |
 | 192.168.2.21 | Pantalla 1 | | | |
 | … | | | | |
+| 192.168.2.31 | CARE tatami 1 | | Tatami 1 | |
+| 192.168.2.32 | CARE tatami 2 | | Tatami 2 | |
+| … | | | | |
+| 192.168.2.41 | Comisionado 1 | | Mesa de comisionado | |
+| 192.168.2.42 | Comisionado 2 | | | |
 
 > **Convención:** el último dígito coincide con el número del equipo: el marcador del tatami N es
 > la `.(10 + N)` —tatami 1 → `.11`, tatami 2 → `.12`, tatami 5 → `.15`— y la pantalla N, la
-> `.(20 + N)` —pantalla 1 → `.21`—. Se empieza en la `.11` y la `.21`, y no en la `.10` y la `.20`,
+> `.(20 + N)` —pantalla 1 → `.21`—, y el CARE del tatami N, la `.(30 + N)` —tatami 1 → `.31`—. Se empieza en la `.11` y la `.21`, y no en la `.10` y la `.20`,
 > para que el primero acabe en 1 y no en 0. Cuando un marcador falla, saber su IP de memoria ahorra
 > minutos.
 
@@ -226,6 +233,22 @@ Misma configuración de red que los marcadores. Son de **solo lectura**: reciben
 combates por WebSocket desde el servidor y nunca escriben. Aquí el Wi-Fi es aceptable, porque una
 reconexión solo produce un parpadeo en la pantalla.
 
+### 2.5 JudoReplay: CARE (.31 a .40) y comisionados (.41 a .45)
+
+El vídeo de los tatamis (ver `JudoReplay/Documentación/01-Plan.md`). Inician sesión en la API como
+el resto, con los roles `replay` (el CARE de un tatami) y `comisionado`, y la IP se pone desde la
+propia aplicación (rueda dentada → «Red de la competición») con la misma convención: el CARE del
+tatami N es la `.(30 + N)`.
+
+Lo distinto es que **el vídeo no pasa por el servidor**: va directo de cada CARE a quien lo mira (el
+comisionado y, con OBS, el crono de su tatami), por HTTP en el puerto **8450** del CARE y con tickets
+firmados por la API. Es el único tráfico entre dos equipos que no son el servidor, y es a propósito:
+pasar el vídeo de diez tatamis por el `.3` lo convertiría en el cuello de botella.
+
+- **Cable** para los comisionados y para los cronos que emitan con OBS, si se puede: es donde va el
+  vídeo.
+- El instalador de JudoReplay abre el **8450** en el cortafuegos de Windows, solo para la subred.
+
 ---
 
 ## 3. Puertos y flujos permitidos
@@ -234,7 +257,7 @@ reconexión solo produce un parpadeo en la pantalla.
 
 | Puerto | Protocolo | Servicio | Quién puede acceder |
 |---|---|---|---|
-| **8443** | TCP / HTTPS + WebSocket | API de JudoAdministración | `.5`–`.9`, `.11`–`.20`, `.21`–`.30` |
+| **8443** | TCP / HTTPS + WebSocket | API de JudoAdministración | `.5`–`.9`, `.11`–`.20`, `.21`–`.30`, `.31`–`.45` |
 | **5432** | TCP | PostgreSQL | **Solo el propio servidor** (`127.0.0.1`) |
 | **80** en `192.168.0.3` | TCP / HTTP | Web de entrenadores (ver la 04) | Solo la red de entrenadores, `192.168.0.0/24` |
 | 3389 / 22 | TCP | Escritorio remoto / SSH | Solo `.5` (opcional, para mantenimiento) |
@@ -256,11 +279,19 @@ switch.
   .11 – .20               │                              │
                           │                              │
   Pantallas      ──8443──▶│                              │
-  .21 – .30        (WS)   └──────────────────────────────┘
+  .21 – .30        (WS)   │                              │
+                          │                              │
+  CARE           ──8443──▶│                              │
+  .31 – .40        (WS)   │                              │
+  Comisionados   ──8443──▶│                              │
+  .41 – .45        (WS)   └──────────────────────────────┘
+
+  Vídeo (JudoReplay):  CARE :8450  ──▶  comisionados y crono de su tatami (OBS)
 ```
 
-Ningún dispositivo necesita hablar con otro dispositivo: **todo el tráfico es radial hacia el
-`.3`**. Si observas tráfico entre dos marcadores, algo está mal configurado.
+Con los datos, ningún dispositivo necesita hablar con otro: **todo ese tráfico es radial hacia el
+`.3`**. Si observas tráfico entre dos marcadores, algo está mal configurado. La única excepción es
+el vídeo de JudoReplay, que va directo del CARE a quien lo mira (§2.5).
 
 ### 3.3 Firewall del servidor
 

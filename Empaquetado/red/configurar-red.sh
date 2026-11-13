@@ -66,6 +66,10 @@ Rangos del plan de direcciones (doc 02):
   puesto      192.168.2.5  - 192.168.2.9     puestos de administración
   marcador    192.168.2.11 - 192.168.2.20    marcadores de tatami
   pantalla    192.168.2.21 - 192.168.2.30    pantallas de visualización
+  care        192.168.2.31 - 192.168.2.40    CARE de JudoReplay (tatami N → .30+N)
+  comisionado 192.168.2.41 - 192.168.2.45    comisionados de JudoReplay
+
+Los cuatro últimos se configuran desde su aplicación (JudoCrono, JudoReplay).
 AYUDA
 }
 

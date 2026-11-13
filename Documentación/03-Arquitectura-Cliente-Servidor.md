@@ -204,6 +204,13 @@ la toca al reejecutarse sobre un servidor ya montado.
 | `admin` | Responsable de la competición | `Administracion` | Todo: configuración del evento y datos maestros |
 | `operador` | Puestos `.5`–`.9` | `Operacion` | Participantes, pesaje, sorteo, orden de combates y resultados |
 | `marcador` | Marcadores de tatami `.11`–`.20` | `Resultados` | Solo anotar el resultado de un combate |
+| `pantalla` | Pantallas `.21`–`.30` | — | Solo leer |
+| `replay` | CARE de JudoReplay `.31`–`.40` | `Replay`, `ReplayCare` | Latido del CARE, marcas y llamar al comisionado. Ningún dato de la competición |
+| `comisionado` | Comisionados de JudoReplay `.41`–`.45` | `Replay`, `Comisionado` | Ver los CARE y las marcas, y pedir tickets para el vídeo de cualquier tatami |
+
+Los dos de JudoReplay no entran en esta aplicación (como `marcador` y `pantalla`, que entran en
+JudoCrono). Sus endpoints están en `JudoAdministracion.Api/Endpoints/ReplayEndpoints.cs`, y lo que
+hacen, en `JudoReplay/Documentación/01-Plan.md` (§5.3).
 
 Un usuario por persona y no uno compartido: las tablas guardan `usuario_insert` y `usuario_update`, y
 con una cuenta común esa traza no vale para nada.
