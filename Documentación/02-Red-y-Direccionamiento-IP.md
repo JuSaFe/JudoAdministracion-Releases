@@ -26,7 +26,8 @@ Red: **192.168.2.0/24** · Máscara: **255.255.255.0** · Puerta de enlace: **19
 | `192.168.2.21` – `192.168.2.30` | 10 | **Pantallas de visualización** | Muestran tatamis y sus 4 próximos combates |
 | `192.168.2.31` – `192.168.2.40` | 10 | **CARE (JudoReplay)** | Graban la cámara de su tatami y tienen el reproductor de los árbitros |
 | `192.168.2.41` – `192.168.2.45` | 5 | **Comisionados (JudoReplay)** | Ven el vídeo de todos los tatamis; se usan dos y quedan tres de reserva |
-| `192.168.2.46` – `192.168.2.99` | 54 | *Libre* | Ampliación futura |
+| `192.168.2.46` – `192.168.2.50` | 5 | **Comentaristas (JudoReplay)** | Ven el directo de un tatami con su marcador, para grabarlo y comentarlo |
+| `192.168.2.51` – `192.168.2.99` | 49 | *Libre* | Ampliación futura |
 | `192.168.2.100` – `192.168.2.199` | 100 | **Pool DHCP** | Dispositivos no planificados (ver §1.2) |
 | `192.168.2.200` – `192.168.2.254` | 55 | *Libre* | Pruebas y diagnóstico |
 

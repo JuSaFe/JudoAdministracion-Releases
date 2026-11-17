@@ -205,10 +205,11 @@ la toca al reejecutarse sobre un servidor ya montado.
 | `operador` | Puestos `.5`–`.9` | `Operacion` | Participantes, pesaje, sorteo, orden de combates y resultados |
 | `marcador` | Marcadores de tatami `.11`–`.20` | `Resultados` | Solo anotar el resultado de un combate |
 | `pantalla` | Pantallas `.21`–`.30` | — | Solo leer |
-| `replay` | CARE de JudoReplay `.31`–`.40` | `Replay`, `ReplayCare` | Latido del CARE, marcas y llamar al comisionado. Ningún dato de la competición |
-| `comisionado` | Comisionados de JudoReplay `.41`–`.45` | `Replay`, `Comisionado` | Ver los CARE y las marcas, y pedir tickets para el vídeo de cualquier tatami |
+| `replay` | CARE de JudoReplay `.31`–`.40` | `Replay`, `ReplayMarcar`, `ReplayCare` | Latido del CARE, marcas y llamar al comisionado. Ningún dato de la competición |
+| `comisionado` | Comisionados de JudoReplay `.41`–`.45` | `Replay`, `ReplayMarcar`, `Comisionado` | Ver los CARE y las marcas, poner y mover marcas, y pedir tickets para el vídeo de cualquier tatami |
+| `comentarista` | Comentaristas de JudoReplay `.46`–`.50` | `Replay`, `Comisionado` | Ver los CARE y el marcador de cada tatami, y pedir tickets para su vídeo. No pone marcas ni llama |
 
-Los dos de JudoReplay no entran en esta aplicación (como `marcador` y `pantalla`, que entran en
+Los tres de JudoReplay no entran en esta aplicación (como `marcador` y `pantalla`, que entran en
 JudoCrono). Sus endpoints están en `JudoAdministracion.Api/Endpoints/ReplayEndpoints.cs`, y lo que
 hacen, en `JudoReplay/Documentación/01-Plan.md` (§5.3).
 
